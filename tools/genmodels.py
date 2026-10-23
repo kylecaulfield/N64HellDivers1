@@ -11,7 +11,11 @@ follow too, see assets/models/README.md):
   * 1 unit = 1 metre, +Y up, model faces +Z (Blender: faces -Y, Z up; the glTF
     exporter converts the axes).
   * Origin at the ground contact point, centred.
-  * Flat shaded: each triangle has its own vertices, normal and color.
+  * Flat shaded by default. Parts added with smooth=True share averaged
+    normals, so the importer can share their vertices (cheaper on the RSP).
+  * Triangle budgets (everything is on screen at once, up to the enemy cap):
+    skitter ~45, gnasher ~70, bulwark ~100, soldier ~100. Faces the fixed
+    overhead camera can never see (most bottoms) are left out.
   * Materials carry Fast64 "f3d_mat" extras, because Tiny3D's importer refuses
     materials without them. The combiner is shade-only (vertex color x light).
 """
@@ -43,7 +47,7 @@ def quad(a, b, c, d, color):
     return [((a, b, c), color), ((a, c, d), color)]
 
 
-def box(cx, cy, cz, sx, sy, sz, color, top=None, bottom=None):
+def box(cx, cy, cz, sx, sy, sz, color, top=None, bottom=None, top_face=True, bottom_face=True):
     """Axis-aligned box centred at (cx, cy, cz) with full sizes (sx, sy, sz)."""
     x0, x1 = cx - sx / 2, cx + sx / 2
     y0, y1 = cy - sy / 2, cy + sy / 2
@@ -52,8 +56,10 @@ def box(cx, cy, cz, sx, sy, sz, color, top=None, bottom=None):
     bottom = bottom or color
     side = color
     tris = []
-    tris += quad((x0, y1, z1), (x1, y1, z1), (x1, y1, z0), (x0, y1, z0), top)     # +Y
-    tris += quad((x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1), bottom)  # -Y
+    if top_face:
+        tris += quad((x0, y1, z1), (x1, y1, z1), (x1, y1, z0), (x0, y1, z0), top)     # +Y
+    if bottom_face:
+        tris += quad((x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1), bottom)  # -Y
     tris += quad((x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1), side)    # +Z
     tris += quad((x1, y0, z0), (x0, y0, z0), (x0, y1, z0), (x1, y1, z0), side)    # -Z
     tris += quad((x1, y0, z1), (x1, y0, z0), (x1, y1, z0), (x1, y1, z1), side)    # +X
@@ -109,6 +115,43 @@ def ellipsoid(cx, cy, cz, rx, ry, rz, color, rings=4, segments=6, jitter=None):
     return tris
 
 
+def bipyramid(cx, cy, cz, rx, ry, rz, color, sides=4, top=None, bottom_face=True):
+    """Two pyramids base to base around a horizontal ring of `sides` points
+    (the first at +Z): 2 * sides triangles, sides + 2 vertices. sides=4 is
+    a stretched octahedron. Upper faces in `top`."""
+    top = top or color
+    ring = [(cx + math.sin(2 * math.pi * i / sides) * rx, cy,
+             cz + math.cos(2 * math.pi * i / sides) * rz) for i in range(sides)]
+    up, down = (cx, cy + ry, cz), (cx, cy - ry, cz)
+    tris = []
+    for i in range(sides):
+        a, b = ring[i], ring[(i + 1) % sides]
+        tris.append(((up, a, b), top))
+        if bottom_face:
+            tris.append(((down, b, a), color))
+    return tris
+
+
+def spike(base, tip, radius, color):
+    """Three-sided spike from a small triangle around `base` to `tip`, open
+    at the base (it sits inside whatever it grows from): 3 triangles."""
+    d = v_norm(v_sub(tip, base))
+    helper = (0.0, 1.0, 0.0) if abs(d[1]) < 0.9 else (1.0, 0.0, 0.0)
+    u = v_norm(v_cross(d, helper))
+    w = v_cross(d, u)
+    pts = [v_add(base, v_add(v_scale(u, radius * math.cos(a)), v_scale(w, radius * math.sin(a))))
+           for a in (0.0, 2 * math.pi / 3, 4 * math.pi / 3)]
+    tris = []
+    for i in range(3):
+        a, b = pts[i], pts[(i + 1) % 3]
+        n = v_cross(v_sub(b, a), v_sub(tip, a))
+        centre = v_scale(v_add(v_add(a, b), tip), 1 / 3)
+        axis = v_add(base, v_scale(d, sum(x * y for x, y in zip(v_sub(centre, base), d))))
+        outward = v_sub(centre, axis)
+        tris.append(((a, b, tip) if sum(x * y for x, y in zip(n, outward)) > 0 else (b, a, tip), color))
+    return tris
+
+
 def transform(tris, scale=(1, 1, 1), rot_y=0.0, rot_x=0.0, rot_z=0.0, offset=(0, 0, 0)):
     """Scale, then rotate X, Z, Y (radians), then translate."""
     cy, sy = math.cos(rot_y), math.sin(rot_y)
@@ -132,6 +175,84 @@ def transform(tris, scale=(1, 1, 1), rot_y=0.0, rot_x=0.0, rot_z=0.0, offset=(0,
 
 def mirror_x(tris):
     return transform(tris, scale=(-1, 1, 1))
+
+
+# ---------------------------------------------------------------------------
+# Rigging. A Model holds triangles tagged with a bone, a skeleton and
+# keyframed animations. Bones are listed in depth-first order (Tiny3D's
+# importer numbers them that way) and every triangle follows exactly one bone.
+
+class Model:
+    def __init__(self):
+        self.tris = []    # ((p0, p1, p2), rgb, bone, smooth group or -1)
+        self.bones = []   # (name, parent index or -1, pivot in model space)
+        self.anims = {}   # name -> (duration, [(bone, "rotation"|"translation", [(t, value)])])
+        self.groups = 0
+
+    def bone(self, name, parent, pivot):
+        assert parent < len(self.bones)
+        self.bones.append((name, parent, pivot))
+        return len(self.bones) - 1
+
+    def add(self, tris, bone=0, smooth=False):
+        """smooth: the triangles of this call share averaged normals."""
+        group = -1
+        if smooth:
+            group = self.groups
+            self.groups += 1
+        self.tris += [(pts, col, bone, group) for pts, col in tris]
+
+
+def q_axis(axis, angle):
+    s = math.sin(angle * 0.5)
+    return (axis[0] * s, axis[1] * s, axis[2] * s, math.cos(angle * 0.5))
+
+
+def q_mul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz)
+
+
+def sample_loop(duration, steps, fn):
+    """Keyframes [(t, fn(phase))] over one loop; the last equals the first."""
+    return [(duration * k / steps, fn(2 * math.pi * k / steps)) for k in range(steps + 1)]
+
+
+def sample_curve(duration, points, fn):
+    """Keyframes at fractions of the duration: points = [(fraction, x)]."""
+    return [(duration * f, fn(x)) for f, x in points]
+
+
+def leg_rot(side, forward, lift):
+    """Leg rotation about its hip: `forward` swings the foot towards +Z,
+    `lift` raises it. Legs stick out sideways, `side` is -1 (left) or +1."""
+    return q_mul(q_axis((0, 1, 0), -side * forward), q_axis((0, 0, 1), side * lift))
+
+
+def add_walk(m, name, duration, root, root_pivot, legs, swing, lift, bob, extra=()):
+    """Alternating gait: legs = [(bone, side, group)] with group 0 or 1."""
+    ch = []
+    for bone, side, group in legs:
+        sgn = 1.0 if group == 0 else -1.0
+        ch.append((bone, "rotation", sample_loop(duration, 12, lambda ph, side=side, sgn=sgn: leg_rot(
+            side, swing * sgn * math.sin(ph), lift * max(0.0, sgn * math.cos(ph))))))
+    ch.append((root, "translation", sample_loop(duration, 12, lambda ph: (
+        root_pivot[0], root_pivot[1] + bob * (0.5 + 0.5 * math.cos(2 * ph)), root_pivot[2]))))
+    ch += list(extra)
+    m.anims[name] = (duration, ch)
+
+
+def add_attack(m, name, duration, root, rear, strike, extra=()):
+    """Rear up (nose up), strike down, settle. Fractions match the sim's
+    windup -> hit -> recover rhythm roughly."""
+    pts = [(0.0, 0.0), (0.55, rear), (0.75, strike), (1.0, 0.0)]
+    ch = [(root, "rotation", sample_curve(duration, pts, lambda a: q_axis((1, 0, 0), a)))]
+    ch += list(extra)
+    m.anims[name] = (duration, ch)
 
 
 # ---------------------------------------------------------------------------
@@ -164,98 +285,142 @@ GROUND     = (120, 100, 70)
 
 
 def soldier():
-    """Trooper, ~1.8 m. Faces +Z. Backpack on -Z, rifle on the right (+X... -X)."""
+    """Trooper, ~1.8 m, faces +Z. Rig: hips (root, carries torso, arms,
+    rifle, pack, helmet) and two legs. Animations: run, idle."""
+    m = Model()
+    hips = m.bone("hips", -1, (0.0, 0.9, 0.0))
+    legs = [m.bone("leg_l", hips, (-0.13, 0.84, 0.0)), m.bone("leg_r", hips, (0.13, 0.84, 0.0))]
+    for leg, side in zip(legs, (-1, 1)):
+        m.add(box(0.13 * side, 0.42, 0.0, 0.18, 0.84, 0.22, ARMOR_DARK, top_face=False, bottom_face=False), leg)
     t = []
-    # Legs
-    for side in (-1, 1):
-        t += box(0.13 * side, 0.42, 0.0, 0.18, 0.84, 0.22, ARMOR_DARK)
-        t += box(0.13 * side, 0.06, 0.04, 0.2, 0.12, 0.3, SKIN_GLOVE)        # boots
     # Torso with amber chest stripe
-    t += box(0, 1.15, 0, 0.5, 0.62, 0.3, ARMOR, top=ARMOR_DARK)
-    t += box(0, 1.22, 0.155, 0.36, 0.12, 0.02, AMBER)
-    # Shoulder pads
+    t += box(0, 1.15, 0, 0.5, 0.62, 0.3, ARMOR, top=ARMOR_DARK, bottom_face=False)
+    t += quad((-0.18, 1.16, 0.152), (0.18, 1.16, 0.152), (0.18, 1.28, 0.152), (-0.18, 1.28, 0.152), AMBER)
     for side in (-1, 1):
-        t += box(0.33 * side, 1.38, 0, 0.18, 0.12, 0.3, AMBER)
-    # Arms, holding the rifle forward
-    for side in (-1, 1):
-        t += box(0.32 * side, 1.12, 0.12, 0.14, 0.42, 0.14, ARMOR_DARK)
-        t += box(0.22 * side, 0.98, 0.32, 0.12, 0.12, 0.14, SKIN_GLOVE)
-    # Rifle
-    t += box(0.0, 1.0, 0.45, 0.08, 0.1, 0.7, GUN)
-    t += box(0.0, 0.92, 0.32, 0.06, 0.14, 0.08, GUN)
-    # Backpack
-    t += box(0, 1.15, -0.24, 0.4, 0.5, 0.18, ARMOR_DARK, top=AMBER)
-    # Helmet: rounded shell with a wide wrap-around visor band
-    t += ellipsoid(0, 1.62, 0, 0.17, 0.17, 0.18, ARMOR, rings=4, segments=8)
-    t += box(0, 1.63, 0.1, 0.28, 0.07, 0.12, VISOR)
-    return t
+        t += box(0.33 * side, 1.38, 0, 0.18, 0.12, 0.3, AMBER, bottom_face=False)        # shoulder pads
+        t += box(0.32 * side, 1.12, 0.12, 0.14, 0.42, 0.14, ARMOR_DARK,
+                 top_face=False, bottom_face=False)                                      # arms
+    t += box(0.0, 1.0, 0.45, 0.08, 0.1, 0.7, GUN, bottom_face=False)                     # rifle
+    t += box(0, 1.15, -0.24, 0.4, 0.5, 0.18, ARMOR_DARK, top=AMBER, bottom_face=False)  # backpack
+    t += quad((-0.12, 1.57, 0.165), (0.12, 1.57, 0.165), (0.12, 1.65, 0.165), (-0.12, 1.65, 0.165), VISOR)
+    m.add(t, hips)
+    m.add(bipyramid(0, 1.62, 0, 0.17, 0.17, 0.18, ARMOR, sides=6), hips, smooth=True)    # helmet
+
+    hp = m.bones[hips][2]
+    run_legs = [(leg, "rotation", sample_loop(0.6, 12, lambda ph, s=s: q_axis((1, 0, 0), -0.6 * s * math.sin(ph))))
+                for leg, s in zip(legs, (1.0, -1.0))]
+    m.anims["run"] = (0.6, run_legs + [
+        (hips, "translation", sample_loop(0.6, 12, lambda ph: (hp[0], hp[1] + 0.05 * abs(math.sin(ph)), hp[2]))),
+        (hips, "rotation", sample_loop(0.6, 12, lambda ph: q_axis((1, 0, 0), 0.12))),
+    ])
+    m.anims["idle"] = (2.0, [
+        (hips, "translation", sample_loop(2.0, 8, lambda ph: (hp[0], hp[1] + 0.012 * math.sin(ph), hp[2]))),
+    ])
+    return m
 
 
-def bug_legs(count, body_y, spread, length, color, thickness=0.06, splay=0.6):
-    t = []
+def bug_legs(m, root, count, body_y, spread, length, color, thickness=0.06, splay=0.6, knee=True):
+    """`count` pairs of legs along the body, each a spike from hip to foot
+    (two, hip-knee-foot, with knee=True). Legs that move together (same side,
+    same gait group) share one bone pivoting at their mean hip: every bone is
+    an RSP matrix load per bug drawn. Returns [(bone, side, gait group)];
+    the groups are alternating tripods (diagonal pairs for four legs)."""
+    groups = {}
     for i in range(count):
         z = (i - (count - 1) / 2) * spread
         for side in (-1, 1):
-            upper = box(0, 0, 0, length * 0.6, thickness, thickness, color)
-            upper = transform(upper, rot_z=-0.5 * side, offset=(side * (0.12 + length * 0.25), body_y, z))
-            lower = box(0, 0, 0, thickness, body_y * 1.05, thickness, color)
-            lower = transform(lower, rot_z=0.25 * side,
-                              offset=(side * (0.12 + length * splay), body_y * 0.5, z))
-            t += upper + lower
-    return t
+            groups.setdefault((side, (i + (side > 0)) % 2), []).append(z)
+    out = []
+    for (side, group), zs in sorted(groups.items()):
+        name = f"legs_{'l' if side < 0 else 'r'}{group}"
+        bone = m.bone(name, root, (side * 0.12, body_y, sum(zs) / len(zs)))
+        for z in zs:
+            hip = (side * 0.12, body_y, z)
+            foot = (side * (0.12 + length * splay), 0.0, z * 1.4)
+            if knee:
+                kn = (side * (0.12 + length * 0.4), body_y * 1.2, z * 1.2)
+                m.add(spike(hip, kn, thickness, color), bone, smooth=True)
+                m.add(spike(kn, foot, thickness * 0.8, color), bone, smooth=True)
+            else:
+                m.add(spike(hip, foot, thickness, color), bone, smooth=True)
+        out.append((bone, side, group))
+    return out
 
 
 def skitter():
-    """Fast swarmer, ~0.7 m long, low and spindly."""
-    t = []
-    t += ellipsoid(0, 0.28, -0.12, 0.16, 0.12, 0.24, CHITIN, rings=3, segments=6)   # abdomen
-    t += ellipsoid(0, 0.3, 0.14, 0.11, 0.09, 0.12, CHITIN_LT, rings=3, segments=6)   # thorax
-    t += ellipsoid(0, 0.3, 0.3, 0.08, 0.07, 0.08, CHITIN_DK, rings=3, segments=5)    # head
-    t += box(0, 0.36, -0.18, 0.12, 0.04, 0.16, GLAND)                                # back gland
+    """Fast swarmer, ~0.7 m long, low and spindly. Animations: walk, attack."""
+    m = Model()
+    pivot = (0.0, 0.28, 0.0)
+    root = m.bone("body", -1, pivot)
+    m.add(bipyramid(0, 0.28, -0.12, 0.16, 0.12, 0.26, CHITIN), root, smooth=True)     # abdomen
+    m.add(bipyramid(0, 0.3, 0.16, 0.11, 0.09, 0.14, CHITIN_LT), root, smooth=True)    # thorax
+    m.add(spike((0, 0.3, 0.26), (0, 0.27, 0.44), 0.07, CHITIN_DK), root, smooth=True)     # head
+    m.add(spike((0, 0.36, -0.12), (0, 0.46, -0.28), 0.06, GLAND), root, smooth=True)      # gland sac
     for side in (-1, 1):
-        t += transform(box(0, 0, 0, 0.03, 0.03, 0.14, CLAW), rot_y=0.4 * side,
-                       offset=(0.05 * side, 0.27, 0.4))
-    t += bug_legs(3, 0.28, 0.16, 0.42, CHITIN_DK, thickness=0.04)
-    return t
+        m.add(spike((0.04 * side, 0.27, 0.36), (0.08 * side, 0.25, 0.52), 0.025, CLAW), root,
+              smooth=True)                                                               # claws
+    legs = bug_legs(m, root, 3, 0.28, 0.16, 0.42, CHITIN_DK, thickness=0.035, knee=False)
+    add_walk(m, "walk", 0.36, root, pivot, legs, swing=0.45, lift=0.35, bob=0.02)
+    add_attack(m, "attack", 0.4, root, rear=-0.35, strike=0.3)
+    return m
 
 
 def gnasher():
-    """Standard warrior, ~1.3 m tall, scythe forelimbs."""
-    t = []
-    t += ellipsoid(0, 0.62, -0.35, 0.3, 0.26, 0.42, CHITIN, rings=4, segments=7)    # abdomen
-    t += ellipsoid(0, 0.8, 0.1, 0.22, 0.24, 0.24, CHITIN_LT, rings=4, segments=7)    # thorax
-    t += ellipsoid(0, 1.0, 0.36, 0.16, 0.14, 0.16, CHITIN_DK, rings=3, segments=6)   # head
-    t += box(0, 0.86, -0.42, 0.2, 0.06, 0.4, GLAND)
+    """Standard warrior, ~1.3 m tall, scythe forelimbs. Animations: walk, attack."""
+    m = Model()
+    pivot = (0.0, 0.7, 0.0)
+    root = m.bone("body", -1, pivot)
+    m.add(bipyramid(0, 0.62, -0.35, 0.3, 0.26, 0.42, CHITIN), root, smooth=True)      # abdomen
+    m.add(bipyramid(0, 0.8, 0.1, 0.22, 0.24, 0.24, CHITIN_LT), root, smooth=True)     # thorax
+    m.add(bipyramid(0, 1.0, 0.36, 0.15, 0.13, 0.16, CHITIN_DK), root, smooth=True)    # head
+    m.add(spike((0, 0.8, -0.4), (0, 0.98, -0.62), 0.1, GLAND), root, smooth=True)         # gland sac
     for side in (-1, 1):
-        # Mandibles
-        t += transform(box(0, 0, 0, 0.04, 0.04, 0.18, CLAW), rot_y=0.5 * side,
-                       offset=(0.08 * side, 0.94, 0.52))
-        # Scythe arms
-        arm = box(0, 0, 0, 0.07, 0.5, 0.07, CHITIN_DK)
-        t += transform(arm, rot_x=0.9, offset=(0.24 * side, 1.0, 0.32))
-        blade = box(0, 0, 0, 0.04, 0.06, 0.5, CLAW)
-        t += transform(blade, rot_x=-0.5, offset=(0.26 * side, 1.08, 0.66))
-    t += bug_legs(2, 0.6, 0.34, 0.7, CHITIN_DK, thickness=0.07)
-    return t
+        m.add(spike((0.07 * side, 0.95, 0.46), (0.03 * side, 0.92, 0.62), 0.03, CLAW), root,
+              smooth=True)                                                               # mandibles
+    # Both scythes on one bone: they sway and strike together.
+    arms = m.bone("arms", root, (0.0, 1.0, 0.22))
+    for side in (-1, 1):
+        elbow = (0.26 * side, 1.18, 0.5)
+        m.add(spike((0.24 * side, 1.0, 0.22), elbow, 0.05, CHITIN_DK), arms, smooth=True)
+        m.add(spike(elbow, (0.28 * side, 0.95, 0.92), 0.045, CLAW), arms, smooth=True)
+    legs = bug_legs(m, root, 2, 0.6, 0.34, 0.7, CHITIN_DK, thickness=0.07, knee=False)
+    sway = [(arms, "rotation", sample_loop(0.6, 12, lambda ph: q_axis((1, 0, 0), 0.12 * math.sin(ph))))]
+    add_walk(m, "walk", 0.6, root, pivot, legs, swing=0.4, lift=0.3, bob=0.03, extra=sway)
+    raise_strike = [(arms, "rotation", sample_curve(0.6, [(0.0, 0.0), (0.55, -1.0), (0.75, 0.5), (1.0, 0.0)],
+                                                    lambda x: q_axis((1, 0, 0), x)))]
+    add_attack(m, "attack", 0.6, root, rear=-0.15, strike=0.15, extra=raise_strike)
+    return m
+
+
+def tent(cx, cy, cz, w, h, length, color):
+    """Two sloped roof faces, eaves at cy, ridge h above along Z: 4 triangles."""
+    x0, x1, z0, z1, top = cx - w / 2, cx + w / 2, cz - length / 2, cz + length / 2, cy + h
+    return (quad((x1, cy, z1), (x1, cy, z0), (cx, top, z0), (cx, top, z1), color) +
+            quad((x0, cy, z0), (x0, cy, z1), (cx, top, z1), (cx, top, z0), color))
 
 
 def bulwark():
-    """Slow armored brute, ~2.2 m tall, heavy frontal plating."""
+    """Slow armored brute, ~2.2 m tall, heavy frontal plating. Animations: walk, attack."""
+    m = Model()
+    pivot = (0.0, 1.1, 0.0)
+    root = m.bone("body", -1, pivot)
+    m.add(bipyramid(0, 1.0, -0.6, 0.6, 0.52, 0.8, CHITIN, sides=6), root, smooth=True)
+    m.add(bipyramid(0, 1.25, 0.3, 0.52, 0.5, 0.5, CHITIN_LT), root, smooth=True)
+    m.add(bipyramid(0, 1.2, 0.8, 0.28, 0.24, 0.24, CHITIN_DK), root, smooth=True)
     t = []
-    t += ellipsoid(0, 1.0, -0.6, 0.6, 0.52, 0.8, CHITIN, rings=4, segments=8)
-    t += ellipsoid(0, 1.25, 0.3, 0.52, 0.5, 0.5, CHITIN_LT, rings=4, segments=8)
-    t += ellipsoid(0, 1.2, 0.8, 0.28, 0.24, 0.24, CHITIN_DK, rings=3, segments=6)
     # Armor plates: a frontal shield and overlapping back plates
-    t += transform(box(0, 0, 0, 1.2, 0.9, 0.12, PLATE, top=CHITIN_DK), rot_x=-0.35,
+    t += transform(box(0, 0, 0, 1.2, 0.9, 0.12, PLATE, top=CHITIN_DK, bottom_face=False), rot_x=-0.35,
                    offset=(0, 1.45, 0.75))
+    m.add(t, root)
     for k in range(3):
-        t += box(0, 1.55 - k * 0.08, -0.15 - k * 0.42, 1.0 - k * 0.12, 0.12, 0.45, PLATE)
+        m.add(tent(0, 1.45 - k * 0.1, -0.15 - k * 0.42, 1.0 - k * 0.12, 0.22, 0.45, PLATE), root, smooth=True)
     for side in (-1, 1):
-        t += box(0.42 * side, 1.62, -0.6, 0.16, 0.1, 0.5, GLAND)
-        tusk = cylinder(0, 0, 0, 0.07, 0.5, 5, CLAW, radius_top=0.0)
-        t += transform(tusk, rot_x=1.3, offset=(0.2 * side, 1.0, 0.95))
-    t += bug_legs(3, 0.95, 0.5, 1.0, CHITIN_DK, thickness=0.14, splay=0.5)
-    return t
+        m.add(spike((0.36 * side, 1.4, -0.6), (0.46 * side, 1.75, -0.7), 0.1, GLAND), root, smooth=True)
+        m.add(spike((0.2 * side, 1.0, 0.9), (0.24 * side, 0.85, 1.4), 0.07, CLAW), root, smooth=True)
+    legs = bug_legs(m, root, 3, 0.95, 0.5, 1.0, CHITIN_DK, thickness=0.14, splay=0.5)
+    add_walk(m, "walk", 1.1, root, pivot, legs, swing=0.3, lift=0.25, bob=0.05)
+    add_attack(m, "attack", 1.0, root, rear=-0.35, strike=0.2)
+    return m
 
 
 def dropship():
@@ -403,56 +568,119 @@ def fast64_material(name):
     }
 
 
-def build_glb(name, tris):
-    positions, normals, colors = [], [], []
-    for (p0, p1, p2), col in tris:
-        n = v_norm(v_cross(v_sub(p1, p0), v_sub(p2, p0)))
+class GlbWriter:
+    """Accumulates buffer views and accessors for one binary glTF."""
+
+    def __init__(self):
+        self.blob = b""
+        self.views = []
+        self.accessors = []
+
+    def accessor(self, data, component, count, kind, target=None, minv=None, maxv=None):
+        pad = (4 - len(self.blob) % 4) % 4
+        self.blob += b"\0" * pad
+        view = {"buffer": 0, "byteOffset": len(self.blob), "byteLength": len(data)}
+        if target:
+            view["target"] = target
+        self.blob += data
+        self.views.append(view)
+        acc = {"bufferView": len(self.views) - 1, "componentType": component, "count": count, "type": kind}
+        if minv is not None:
+            acc["min"], acc["max"] = minv, maxv
+        self.accessors.append(acc)
+        return len(self.accessors) - 1
+
+
+def build_glb(name, model):
+    tris, bones = model.tris, model.bones
+
+    def key(p, group):
+        return (group, round(p[0], 5), round(p[1], 5), round(p[2], 5))
+
+    # Smooth groups: area-weighted face normals summed per shared position.
+    smooth = {}
+    for (p0, p1, p2), col, bone, group in tris:
+        if group < 0:
+            continue
+        n = v_cross(v_sub(p1, p0), v_sub(p2, p0))
+        for p in (p0, p1, p2):
+            smooth[key(p, group)] = v_add(smooth.get(key(p, group), (0.0, 0.0, 0.0)), n)
+
+    positions, normals, colors, joints = [], [], [], []
+    for (p0, p1, p2), col, bone, group in tris:
+        face = v_norm(v_cross(v_sub(p1, p0), v_sub(p2, p0)))
         lin = [srgb_to_linear(c) for c in col] + [1.0]
         for p in (p0, p1, p2):
             positions.append(p)
-            normals.append(n)
+            normals.append(v_norm(smooth[key(p, group)]) if group >= 0 else face)
             colors.append(lin)
+            joints.append(bone)
     count = len(positions)
     if count > 65535:
         raise ValueError(f"{name}: too many vertices ({count})")
 
-    pos_bytes = b"".join(struct.pack("<3f", *p) for p in positions)
-    nrm_bytes = b"".join(struct.pack("<3f", *n) for n in normals)
-    col_bytes = b"".join(struct.pack("<4f", *c) for c in colors)
-    idx_bytes = b"".join(struct.pack("<H", i) for i in range(count))
-    if len(idx_bytes) % 4:
-        idx_bytes += b"\0" * (4 - len(idx_bytes) % 4)
+    w = GlbWriter()
+    VEC_ARRAY, INDEX_ARRAY, FLOAT, UBYTE, USHORT = 34962, 34963, 5126, 5121, 5123
+    attrs = {
+        "POSITION": w.accessor(b"".join(struct.pack("<3f", *p) for p in positions), FLOAT, count, "VEC3",
+                               VEC_ARRAY, [min(p[k] for p in positions) for k in range(3)],
+                               [max(p[k] for p in positions) for k in range(3)]),
+        "NORMAL": w.accessor(b"".join(struct.pack("<3f", *n) for n in normals), FLOAT, count, "VEC3", VEC_ARRAY),
+        "COLOR_0": w.accessor(b"".join(struct.pack("<4f", *c) for c in colors), FLOAT, count, "VEC4", VEC_ARRAY),
+    }
+    if bones:
+        attrs["JOINTS_0"] = w.accessor(b"".join(struct.pack("<4B", j, 0, 0, 0) for j in joints),
+                                       UBYTE, count, "VEC4", VEC_ARRAY)
+        attrs["WEIGHTS_0"] = w.accessor(struct.pack("<4f", 1, 0, 0, 0) * count, FLOAT, count, "VEC4", VEC_ARRAY)
+    indices = w.accessor(b"".join(struct.pack("<H", i) for i in range(count)), USHORT, count, "SCALAR", INDEX_ARRAY)
 
-    views, offset = [], 0
-    for blob, target in ((pos_bytes, 34962), (nrm_bytes, 34962), (col_bytes, 34962), (idx_bytes, 34963)):
-        views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(blob), "target": target})
-        offset += len(blob)
-    binary = pos_bytes + nrm_bytes + col_bytes + idx_bytes
-
-    mins = [min(p[k] for p in positions) for k in range(3)]
-    maxs = [max(p[k] for p in positions) for k in range(3)]
+    nodes = [{"name": name, "mesh": 0}]
+    scene_nodes = [0]
     gltf = {
         "asset": {"version": "2.0", "generator": "hivebreakers genmodels.py"},
         "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"name": name, "mesh": 0}],
-        "meshes": [{"name": name, "primitives": [{
-            "attributes": {"POSITION": 0, "NORMAL": 1, "COLOR_0": 2},
-            "indices": 3,
-            "material": 0,
-        }]}],
+        "meshes": [{"name": name, "primitives": [{"attributes": attrs, "indices": indices, "material": 0}]}],
         "materials": [fast64_material(name + "_mat")],
-        "buffers": [{"byteLength": len(binary)}],
-        "bufferViews": views,
-        "accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": count, "type": "VEC3", "min": mins, "max": maxs},
-            {"bufferView": 1, "componentType": 5126, "count": count, "type": "VEC3"},
-            {"bufferView": 2, "componentType": 5126, "count": count, "type": "VEC4"},
-            {"bufferView": 3, "componentType": 5123, "count": count, "type": "SCALAR"},
-        ],
     }
+
+    if bones:
+        # Bone nodes follow the mesh node, in the same (depth-first) order.
+        for i, (bname, parent, pivot) in enumerate(bones):
+            ppos = bones[parent][2] if parent >= 0 else (0.0, 0.0, 0.0)
+            nodes.append({"name": bname, "translation": list(v_sub(pivot, ppos))})
+        for i, (bname, parent, pivot) in enumerate(bones):
+            if parent >= 0:
+                nodes[1 + parent].setdefault("children", []).append(1 + i)
+        ibm = b"".join(struct.pack("<16f", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+                                   -piv[0], -piv[1], -piv[2], 1) for _, _, piv in bones)
+        gltf["skins"] = [{"joints": [1 + i for i in range(len(bones))], "skeleton": 1,
+                          "inverseBindMatrices": w.accessor(ibm, FLOAT, len(bones), "MAT4")}]
+        nodes[0]["skin"] = 0
+        scene_nodes.append(1)
+
+        anims = []
+        for aname, (duration, channels) in sorted(model.anims.items()):
+            samplers, chans = [], []
+            for bone, path, keys in channels:
+                times = [k[0] for k in keys]
+                fmt = "<4f" if path == "rotation" else "<3f"
+                t_acc = w.accessor(b"".join(struct.pack("<f", t) for t in times), FLOAT, len(times),
+                                   "SCALAR", None, [min(times)], [max(times)])
+                v_acc = w.accessor(b"".join(struct.pack(fmt, *k[1]) for k in keys), FLOAT, len(keys),
+                                   "VEC4" if path == "rotation" else "VEC3")
+                samplers.append({"input": t_acc, "output": v_acc, "interpolation": "LINEAR"})
+                chans.append({"sampler": len(samplers) - 1, "target": {"node": 1 + bone, "path": path}})
+            anims.append({"name": aname, "samplers": samplers, "channels": chans})
+        gltf["animations"] = anims
+
+    gltf["nodes"] = nodes
+    gltf["scenes"] = [{"nodes": scene_nodes}]
+    gltf["buffers"] = [{"byteLength": len(w.blob)}]
+    gltf["bufferViews"] = w.views
+    gltf["accessors"] = w.accessors
     js = json.dumps(gltf, separators=(",", ":"), sort_keys=True).encode()
     js += b" " * ((4 - len(js) % 4) % 4)
+    binary = w.blob + b"\0" * ((4 - len(w.blob) % 4) % 4)
     total = 12 + 8 + len(js) + 8 + len(binary)
     return (struct.pack("<III", 0x46546C67, 2, total)
             + struct.pack("<II", len(js), 0x4E4F534A) + js
@@ -470,8 +698,12 @@ def main(argv):
         if name not in MODELS:
             print(f"unknown model '{name}'", file=sys.stderr)
             return 1
-        tris = MODELS[name]()
-        data = build_glb(name, tris)
+        built = MODELS[name]()
+        if not isinstance(built, Model):  # static model: one implicit bone-less mesh
+            m = Model()
+            m.add(built, 0)
+            built = m
+        data = build_glb(name, built)
         path = os.path.join(out_dir, name + ".glb")
         # Only touch the file when the content changes, so make stays incremental.
         try:
@@ -482,7 +714,8 @@ def main(argv):
             pass
         with open(path, "wb") as f:
             f.write(data)
-        print(f"    [GEN] {path} ({len(tris)} tris)")
+        rig = f", {len(built.bones)} bones, anims {sorted(built.anims)}" if built.bones else ""
+        print(f"    [GEN] {path} ({len(built.tris)} tris{rig})")
     return 0
 
 

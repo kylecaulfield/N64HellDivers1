@@ -27,6 +27,9 @@ N64_CFLAGS += -std=gnu17 -Wall -Wextra -Werror -Wshadow -Wdouble-promotion \
 ifeq ($(AUTOTEST),1)
 N64_CFLAGS += -DAUTOTEST
 endif
+ifeq ($(BENCH),1)
+N64_CFLAGS += -DBENCH_AT_BOOT
+endif
 
 SRC := $(wildcard src/sim/*.c) $(wildcard src/n64/*.c)
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)

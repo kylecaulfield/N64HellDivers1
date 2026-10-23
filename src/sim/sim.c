@@ -3,20 +3,29 @@
 #include <string.h>
 
 #include "arena.h"
+#include "bot.h"
 #include "camera.h"
+#include "enemy.h"
+#include "flow.h"
+#include "grid.h"
 #include "sim_internal.h"
+#include "waves.h"
 
 void sim_init(sim_t *s, uint32_t seed)
 {
     memset(s, 0, sizeof(*s));
     rng_seed(&s->rng, seed);
     s->settings.enemy_cap = SIM_ENEMY_CAP_DEFAULT;
-    s->settings.trickle_spawn = true;
+    s->settings.flow_budget = FLOW_BUDGET_DEFAULT;
+    s->settings.waves = true;
     arena_generate(&s->arena, &s->rng);
-    // M1: one player, on port 1, at the drop zone. Joining arrives in M5.
+    flow_init(&s->flow, &s->arena);
+    waves_reset(s);
+    // Player 1 drops in at the start; joining arrives in M5.
     sim_spawn_player(s, 0, v2(0.0f, 0.0f));
     camera_reset(s);
     sim_update_counts(s);
+    grid_build(s);
 }
 
 void sim_push_event(sim_t *s, sim_event_type_t type, uint8_t a, vec2 pos, vec2 dir)
@@ -35,35 +44,57 @@ void sim_clear_events(sim_t *s)
 
 void sim_update_counts(sim_t *s)
 {
-    uint16_t players = 0, enemies = 0, projectiles = 0;
+    uint16_t players = 0, projectiles = 0;
     for (int i = 0; i < SIM_MAX_PLAYERS; i++)
         if (s->players[i].active)
             players++;
-    for (int i = 0; i < SIM_MAX_ENEMIES; i++)
-        if (s->enemies[i].active)
-            enemies++;
     for (int i = 0; i < SIM_MAX_PROJECTILES; i++)
         if (s->projectiles[i].active)
             projectiles++;
+    enemies_collect_active(s);
     s->counts.players = players;
-    s->counts.enemies = enemies;
+    s->counts.enemies = s->active_count;
     s->counts.projectiles = projectiles;
 }
 
 void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS])
 {
+    // Everything this tick reads the enemy list and grid built here
+    // (timed as part of the players phase).
+    sim_mark(s, SIM_PHASE_PLAYERS);
+    enemies_collect_active(s);
+    grid_build(s);
+
     player_intent_t intents[SIM_MAX_PLAYERS];
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         player_t *p = &s->players[i];
         p->present = inputs[i].connected;
-        intents[i] = controls_read((control_scheme_t)s->settings.scheme[i], &inputs[i], &p->b_held);
+        if (p->bot)
+            intents[i] = bot_intent(s, i);
+        else
+            intents[i] = controls_read((control_scheme_t)s->settings.scheme[i], &inputs[i], &p->b_held);
     }
-
     players_update(s, intents);
+
+    // Nobody reads the field while no bugs are alive (wave breaks); a group
+    // that spawns walks the last field for the few ticks a fresh one takes.
+    // Bugs within FLOW_DIRECT_RANGE head straight in, so a field a few ticks
+    // old is fine: builds start at most every FLOW_REBUILD_TICKS.
+    sim_mark(s, SIM_PHASE_FLOW);
+    const flow_t *f = &s->flow;
+    if (s->active_count && (f->building || !f->ready || s->tick - f->started >= FLOW_REBUILD_TICKS))
+        flow_step(s, s->settings.flow_budget);
+
+    sim_mark(s, SIM_PHASE_ENEMIES);
     enemies_update(s);
+
+    sim_mark(s, SIM_PHASE_PROJECTILES);
     projectiles_update(s);
-    spawner_update(s);
+
+    sim_mark(s, SIM_PHASE_SPAWN);
+    waves_update(s);
     camera_update(s);
     sim_update_counts(s);
     s->tick++;
+    sim_mark(s, SIM_PHASE_END);
 }

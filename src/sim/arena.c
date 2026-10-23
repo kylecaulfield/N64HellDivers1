@@ -39,6 +39,11 @@ void arena_resolve(const arena_t *a, vec2 *pos, float radius)
 {
     for (int i = 0; i < a->obstacle_count; i++)
         push_out_circle(pos, radius, a->obstacles[i].pos, a->obstacles[i].radius);
+    arena_clamp(a, pos, radius);
+}
+
+void arena_clamp(const arena_t *a, vec2 *pos, float radius)
+{
     pos->x = clampf(pos->x, a->min.x + radius, a->max.x - radius);
     pos->y = clampf(pos->y, a->min.y + radius, a->max.y - radius);
 }

@@ -6,20 +6,46 @@
 #include <libdragon.h>
 #include <stdio.h>
 #include <t3d/t3d.h>
+#include <t3d/t3danim.h>
 #include <t3d/t3dmodel.h>
+#include <t3d/t3dskeleton.h>
 #include <t3d/tpx.h>
 
 // Draws the sim state: floor, rocks, players, bugs as Tiny3D models, and
 // everything small (bullets, effects, aim markers) as tpx particles in a
 // single RSP command.
+//
+// Bugs and soldiers are skinned. Bugs of one type share POSE_SLOTS
+// skeletons; each bug just points the RSP at the slot it uses before its
+// draw block runs (t3d_skeleton_use), so animating 200 bugs costs the same
+// as animating 7. Bugs are drawn grouped by type: the type's material once,
+// then a geometry-only block per bug (the pattern of Tiny3D's 17_culling
+// example), so the RSP does not switch to rdpq mode changes per bug.
 
+// Bug models must be in enemy_type_t order, right after the soldier.
 enum {
-    MDL_SOLDIER, MDL_GNASHER, MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND, MDL_COUNT
+    MDL_SOLDIER, MDL_SKITTER, MDL_GNASHER, MDL_BULWARK,
+    MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND, MDL_COUNT
 };
 
 static const char *const model_names[MDL_COUNT] = {
-    "soldier", "gnasher", "rock_a", "rock_b", "rock_c", "ground",
+    "soldier", "skitter", "gnasher", "bulwark", "rock_a", "rock_b", "rock_c", "ground",
 };
+
+typedef struct {
+    T3DSkeleton skel;
+    T3DAnim anim;
+} pose_slot_t;
+
+static pose_slot_t bug_pose[ENEMY_TYPE_COUNT][POSE_SLOTS];
+
+static struct {
+    T3DSkeleton skel;
+    T3DAnim run, idle;
+    bool running;
+} soldier_pose[SIM_MAX_PLAYERS];
+
+static render_stats_t stats;
 
 #define MODEL_SCALE (WORLD_SCALE / 64.0f)
 #define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES)
@@ -29,6 +55,9 @@ static const char *const model_names[MDL_COUNT] = {
 
 static T3DModel *models[MDL_COUNT];
 static rspq_block_t *blocks[MDL_COUNT];
+// Per bug type: the material, when `blocks` holds geometry only. NULL for a
+// model with several materials, whose block then carries them all.
+static rspq_block_t *bug_material[ENEMY_TYPE_COUNT];
 static T3DViewport viewport;
 static int frame_idx;
 
@@ -37,6 +66,8 @@ static T3DMat4FP *static_mats;    // [0] = floor, [1..] = rocks
 static T3DMat4FP *dynamic_mats;   // [FB_COUNT][MAX_DYNAMIC]
 static TPXParticleS16 *particles; // [FB_COUNT][PARTICLE_PAIRS]
 static T3DMat4FP *particle_mat;   // identity: particles are already in world units
+static uint8_t dyn_pose[MAX_DYNAMIC]; // pose slot per dynamic matrix (bugs only)
+static uint8_t dyn_type[MAX_DYNAMIC]; // enemy type per dynamic matrix (bugs only)
 
 // Model matrix for a unit standing at `pos` facing `facing` (sim space),
 // lifted by `lift` metres and pitched forward by `pitch` radians around its
@@ -63,9 +94,59 @@ void render_init(void)
         char path[64];
         snprintf(path, sizeof(path), "rom:/models/%s.t3dm", model_names[i]);
         models[i] = t3d_model_load(path);
-        rspq_block_begin();
-        t3d_model_draw(models[i]);
-        blocks[i] = rspq_block_end();
+        bool skinned = i <= MDL_BULWARK;
+        bool bug = i >= MDL_SKITTER && skinned;
+        int objects = 0;
+        T3DModelIter it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+        while (t3d_model_iter_next(&it))
+            objects++;
+        if (bug && objects == 1) {
+            T3DModelState state = t3d_model_state_create();
+            rspq_block_begin();
+            it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+            while (t3d_model_iter_next(&it))
+                if (it.object->material)
+                    t3d_model_draw_material(it.object->material, &state);
+            bug_material[i - MDL_SKITTER] = rspq_block_end();
+            // Buffered skeletons draw through the skeleton segment, so one
+            // recorded block serves every pose slot.
+            rspq_block_begin();
+            it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+            while (t3d_model_iter_next(&it))
+                t3d_model_draw_object(it.object, (const T3DMat4FP *)t3d_segment_placeholder(T3D_SEGMENT_SKELETON));
+            blocks[i] = rspq_block_end();
+        } else if (skinned) {
+            T3DSkeleton tmp = t3d_skeleton_create_buffered(models[i], FB_COUNT);
+            rspq_block_begin();
+            t3d_model_draw_skinned(models[i], &tmp);
+            blocks[i] = rspq_block_end();
+            t3d_skeleton_destroy(&tmp);
+        } else {
+            rspq_block_begin();
+            t3d_model_draw(models[i]);
+            blocks[i] = rspq_block_end();
+        }
+    }
+
+    for (int t = 0; t < ENEMY_TYPE_COUNT; t++) {
+        const T3DModel *m = models[MDL_SKITTER + t];
+        for (int k = 0; k < POSE_SLOTS; k++) {
+            pose_slot_t *ps = &bug_pose[t][k];
+            ps->skel = t3d_skeleton_create_buffered(m, FB_COUNT);
+            bool walk = k < WALK_SLOTS;
+            ps->anim = t3d_anim_create(m, walk ? "walk" : "attack");
+            t3d_anim_attach(&ps->anim, &ps->skel);
+            t3d_anim_set_looping(&ps->anim, true);
+            if (walk) // spread the walk cycles so a crowd doesn't march in step
+                t3d_anim_set_time(&ps->anim, ps->anim.animRef->duration * (float)k / WALK_SLOTS);
+        }
+    }
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        soldier_pose[i].skel = t3d_skeleton_create_buffered(models[MDL_SOLDIER], FB_COUNT);
+        soldier_pose[i].run = t3d_anim_create(models[MDL_SOLDIER], "run");
+        soldier_pose[i].idle = t3d_anim_create(models[MDL_SOLDIER], "idle");
+        t3d_anim_attach(&soldier_pose[i].run, &soldier_pose[i].skel);
+        t3d_anim_attach(&soldier_pose[i].idle, &soldier_pose[i].skel);
     }
 
     // Everything the frame loop touches is allocated here, once.
@@ -160,12 +241,44 @@ static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec
 
 // --- Frame ---------------------------------------------------------------------
 
-uint32_t render_scene(const sim_t *sim)
+// Advance the pose slots some bug on screen uses, and each soldier. An unused
+// slot just pauses: its skeleton keeps its last matrices.
+static void update_poses(const sim_t *sim, const bool used[ENEMY_TYPE_COUNT][POSE_SLOTS], float dt)
 {
+    int updated = 0;
+    for (int t = 0; t < ENEMY_TYPE_COUNT; t++) {
+        for (int k = 0; k < POSE_SLOTS; k++) {
+            if (!used[t][k])
+                continue;
+            t3d_anim_update(&bug_pose[t][k].anim, dt);
+            t3d_skeleton_update(&bug_pose[t][k].skel);
+            updated++;
+        }
+    }
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!sim_player_alive(p))
+            continue;
+        if (p->state != PSTATE_NORMAL) // diving / prone: hold the pose
+            continue;
+        bool moving = v2_len2(p->vel) > 0.25f;
+        if (moving != soldier_pose[i].running) {
+            soldier_pose[i].running = moving;
+            t3d_skeleton_reset(&soldier_pose[i].skel); // idle leaves the legs alone
+        }
+        t3d_anim_update(moving ? &soldier_pose[i].run : &soldier_pose[i].idle, dt);
+        t3d_skeleton_update(&soldier_pose[i].skel);
+        updated++;
+    }
+    stats.skeletons = (uint16_t)updated;
+}
+
+uint32_t render_scene(const sim_t *sim, float anim_dt)
+{
+    uint64_t t0 = get_ticks();
     frame_idx = (frame_idx + 1) % FB_COUNT;
     T3DMat4FP *dyn = &dynamic_mats[frame_idx * MAX_DYNAMIC];
     TPXParticleS16 *pbuf = &particles[frame_idx * PARTICLE_PAIRS];
-    float t = (float)sim->tick * SIM_DT;
 
     // Camera from the sim: looking north, pitched down, `dist` from target.
     const camera_t *cam = &sim->camera;
@@ -180,6 +293,7 @@ uint32_t render_scene(const sim_t *sim)
 
     // Unit matrices (CPU) before waiting for a framebuffer.
     int ndyn = 0;
+    int player_idx[SIM_MAX_PLAYERS];
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const player_t *p = &sim->players[i];
         if (!sim_player_alive(p))
@@ -192,23 +306,32 @@ uint32_t render_scene(const sim_t *sim)
             pitch = 1.45f;
             lift = 0.1f;
         }
+        player_idx[ndyn] = i;
         unit_matrix(&dyn[ndyn++], p->pos, lift, p->facing, pitch, 1.0f);
     }
-    int first_enemy = ndyn;
-    for (int i = 0; i < SIM_MAX_ENEMIES; i++) {
+    int first_bug = ndyn;
+    bool used[ENEMY_TYPE_COUNT][POSE_SLOTS] = { { false } };
+    for (int n = 0; n < sim->active_count; n++) {
+        int i = sim->active[n];
         const enemy_t *e = &sim->enemies[i];
         if (!e->active || !in_rect(e->pos, vmin, vmax))
             continue;
-        float pitch = 0.0f, lift = 0.0f;
-        if (e->state == ESTATE_WINDUP)
-            pitch = -0.35f; // rear up before the strike
-        else if (e->state == ESTATE_RECOVER)
-            pitch = 0.25f;  // follow-through
-        else
-            lift = 0.05f * fabsf(fm_sinf(t * 14.0f + (float)i)); // scuttle
-        unit_matrix(&dyn[ndyn++], e->pos, lift, e->facing, pitch, 1.0f);
+        uint8_t slot = e->state == ESTATE_CHASE ? (uint8_t)(i % WALK_SLOTS) : WALK_SLOTS;
+        used[e->type][slot] = true;
+        dyn_type[ndyn] = e->type;
+        dyn_pose[ndyn] = slot;
+        // The windup still rears up a little on top of the attack pose, so
+        // the telegraph reads even though attack poses are shared.
+        float pitch = e->state == ESTATE_WINDUP ? -0.15f : 0.0f;
+        unit_matrix(&dyn[ndyn++], e->pos, 0.0f, e->facing, pitch, 1.0f);
     }
+    stats.drawn_bugs = (uint16_t)(ndyn - first_bug);
     int npart = build_particles(sim, pbuf, vmin, vmax);
+    uint64_t t1 = get_ticks();
+    update_poses(sim, used, anim_dt);
+    uint64_t t2 = get_ticks();
+    stats.build_us = (uint32_t)TICKS_TO_US(t1 - t0);
+    stats.anim_us = (uint32_t)TICKS_TO_US(t2 - t1);
 
     uint64_t wait_start = get_ticks();
     surface_t *fb = display_get();
@@ -239,13 +362,23 @@ uint32_t render_scene(const sim_t *sim)
         t3d_matrix_set(&static_mats[1 + i], true);
         rspq_block_run(blocks[MDL_ROCK_A + o->kind]);
     }
-    for (int i = 0; i < first_enemy; i++) {
+    for (int i = 0; i < first_bug; i++) {
+        t3d_skeleton_use(&soldier_pose[player_idx[i]].skel);
         t3d_matrix_set(&dyn[i], true);
         rspq_block_run(blocks[MDL_SOLDIER]);
     }
-    for (int i = first_enemy; i < ndyn; i++) {
-        t3d_matrix_set(&dyn[i], true);
-        rspq_block_run(blocks[MDL_GNASHER]);
+    for (int t = 0; t < ENEMY_TYPE_COUNT; t++) {
+        bool material_set = false;
+        for (int i = first_bug; i < ndyn; i++) {
+            if (dyn_type[i] != t)
+                continue;
+            if (!material_set && bug_material[t])
+                rspq_block_run(bug_material[t]);
+            material_set = true;
+            t3d_skeleton_use(&bug_pose[t][dyn_pose[i]].skel);
+            t3d_matrix_set(&dyn[i], true);
+            rspq_block_run(blocks[MDL_SKITTER + t]);
+        }
     }
     t3d_matrix_pop(1);
 
@@ -265,6 +398,11 @@ uint32_t render_scene(const sim_t *sim)
         tpx_matrix_pop(1);
     }
     return wait_us;
+}
+
+const render_stats_t *render_stats(void)
+{
+    return &stats;
 }
 
 void render_end(void)

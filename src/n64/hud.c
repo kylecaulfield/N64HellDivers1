@@ -1,3 +1,4 @@
+#include "bench.h"
 #include "hud.h"
 #include "weapons.h"
 
@@ -44,7 +45,12 @@ void hud_draw(const sim_t *sim, bool paused)
 {
     player_panel(sim, 0, 12, 214);
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 296, .align = ALIGN_RIGHT }, FONT, 12, 16,
-                     "KILLS %lu  BUGS %u", (unsigned long)sim->kills, sim->counts.enemies);
+                     "WAVE %u  KILLS %lu  BUGS %u", sim->waves.number, (unsigned long)sim->kills,
+                     sim->counts.enemies);
+    const char *bench = bench_status();
+    if (bench)
+        rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER }, FONT, 0, 30,
+                         "%s", bench);
 
     const player_t *p1 = &sim->players[0];
     if (p1->active && p1->state == PSTATE_DEAD) {

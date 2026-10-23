@@ -9,6 +9,7 @@
 #include <t3d/t3d.h>
 
 #include "autotest.h"
+#include "bench.h"
 #include "boot.h"
 #include "fx.h"
 #include "gpu_timing.h"
@@ -28,10 +29,26 @@
 static volatile uint32_t vblank_count;
 static sim_t sim;
 
+// Per-phase sim time for the current frame, summed over its ticks.
+static uint32_t phase_ticks[TIMED_PHASES];
+static uint32_t phase_start;
+static sim_phase_t phase_cur;
+
 static void on_vblank(void *arg)
 {
     (void)arg;
     vblank_count++;
+}
+
+// sim_step calls this at the start of each phase (and once at the end).
+static void on_sim_mark(void *ctx, sim_phase_t phase)
+{
+    (void)ctx;
+    uint32_t now = TICKS_READ();
+    if (phase != SIM_PHASE_PLAYERS)
+        phase_ticks[phase_cur] += now - phase_start;
+    phase_cur = phase;
+    phase_start = now;
 }
 
 int main(void)
@@ -55,6 +72,7 @@ int main(void)
     render_init();
     fx_init();
     sim_init(&sim, 0xC0FFEE);
+    sim.mark = on_sim_mark;
     render_bind_world(&sim);
 
     vi_install_vblank_handler(on_vblank, NULL);
@@ -92,6 +110,8 @@ int main(void)
         // The sim only runs while nothing is covering the game. Effects
         // freeze along with it.
         uint32_t run = (paused || menu_is_open()) ? 0 : ticks;
+        for (int i = 0; i < TIMED_PHASES; i++)
+            phase_ticks[i] = 0;
         for (uint32_t i = 0; i < run; i++) {
             sim_step(&sim, input.ports);
             // Button edges belong to the first tick only.
@@ -107,7 +127,7 @@ int main(void)
         sim.counts.particles = (uint16_t)fx_count();
         uint64_t t_sim = get_ticks();
 
-        uint32_t wait_us = render_scene(&sim);
+        uint32_t wait_us = render_scene(&sim, (float)run * SIM_DT);
         hud_draw(&sim, paused && !menu_is_open());
         menu_draw(&sim);
         overlay_draw();
@@ -117,13 +137,33 @@ int main(void)
 
         uint32_t sim_us = (uint32_t)TICKS_TO_US(t_sim - t_start);
         uint32_t total_us = (uint32_t)TICKS_TO_US(t_end - t_start);
-        overlay_record(&(frame_timing_t){
+        uint32_t render_us = (uint32_t)TICKS_TO_US(t_end - t_sim);
+        const render_stats_t *rs = render_stats();
+        // What is left of the render time once the framebuffer wait and the
+        // CPU-side work are taken out is command issue, including any time
+        // blocked on a full RSP queue.
+        uint32_t cpu_side = wait_us + rs->anim_us + rs->build_us;
+        uint32_t submit_us = render_us > cpu_side ? render_us - cpu_side : 0;
+        frame_timing_t timing = {
             .frame_us = frame_us,
             .cpu_us = total_us - wait_us,
             .sim_us = sim_us,
-        }, &sim, &clock);
+            .anim_us = rs->anim_us,
+            .build_us = rs->build_us,
+            .submit_us = submit_us,
+            .drawn_bugs = rs->drawn_bugs,
+            .skeletons = rs->skeletons,
+        };
+        for (int i = 0; i < TIMED_PHASES; i++)
+            timing.phase_us[i] = (uint32_t)TICKS_TO_US(phase_ticks[i]);
+        overlay_record(&timing, &sim, &clock);
+        bench_frame(&sim, &timing, &clock);
 
-        if (++frames == HEAP_BASELINE_FRAME)
+        if (++frames == HEAP_BASELINE_FRAME) {
             overlay_set_heap_baseline();
+#ifdef BENCH_AT_BOOT
+            bench_start(&sim);
+#endif
+        }
     }
 }

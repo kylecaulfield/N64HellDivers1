@@ -46,7 +46,7 @@ typedef struct {
 
 typedef enum { SCHEME_A, SCHEME_B, SCHEME_COUNT } control_scheme_t;
 typedef enum { WEAPON_RIFLE, WEAPON_SHOTGUN, WEAPON_COUNT } weapon_type_t;
-typedef enum { ENEMY_GNASHER, ENEMY_TYPE_COUNT } enemy_type_t;
+typedef enum { ENEMY_SKITTER, ENEMY_GNASHER, ENEMY_BULWARK, ENEMY_TYPE_COUNT } enemy_type_t;
 
 // --- Players -----------------------------------------------------------------
 
@@ -80,6 +80,7 @@ typedef struct {
     uint16_t reload_timer;   // ticks left in the current reload, 0 = not reloading
     uint16_t b_held;         // ticks B has been held (tap = reload, hold = switch)
     uint16_t dive_cooldown;
+    bool     bot;            // driven by the sim's bot logic instead of a controller
 } player_t;
 
 // --- Enemies -------------------------------------------------------------------
@@ -99,6 +100,11 @@ typedef struct {
     vec2     pos;
     vec2     facing;
     float    hp;
+    // The flow direction depends only on the cell, so it is kept until the
+    // bug changes cell or a new field completes.
+    uint16_t flow_cell;   // FLOW_CELLS = nothing cached
+    uint32_t flow_build;
+    vec2     flow_dir;
 } enemy_t;
 
 // --- Projectiles ---------------------------------------------------------------
@@ -112,6 +118,68 @@ typedef struct {
     vec2    vel;     // m/s
     float   range;   // remaining travel, m
 } projectile_t;
+
+// --- Spatial hash: uniform grid over the arena, rebuilt every tick ---------------
+
+#define GRID_CELL  2.5f   // >= the largest interaction distance (two bulwarks)
+#define GRID_W     26     // ceil(2 * ARENA_HALF_SIZE / GRID_CELL)
+#define GRID_CELLS (GRID_W * GRID_W)
+
+typedef struct {
+    int16_t head[GRID_CELLS];       // first enemy in each cell, -1 = empty
+    int16_t next[SIM_MAX_ENEMIES];  // next enemy in the same cell
+} grid_t;
+
+// Separation scratch: a copy of the bugs' bodies in grid-cell order, one
+// 16-byte D-cache line each, so neighbours are neighbours in memory too
+// (the N64's 8 KB direct-mapped D-cache thrashes on scattered enemy_t).
+typedef struct {
+    float x, y, radius, mass;
+} crowd_body_t;
+
+typedef struct {
+    _Alignas(16) crowd_body_t body[SIM_MAX_ENEMIES];
+    uint16_t enemy[SIM_MAX_ENEMIES];     // enemy index of each body
+    uint16_t start[GRID_CELLS + 1];      // first body of each cell
+} crowd_t;
+
+// --- Flow field: shared distance-to-nearest-player map, built incrementally ----
+
+#define FLOW_CELL  1.0f
+#define FLOW_W     64
+#define FLOW_CELLS (FLOW_W * FLOW_W)
+#define FLOW_QCAP  4096             // per-bucket queue capacity (power of two)
+#define FLOW_INF   0xFFFF
+#define FLOW_ROCKS_ALL 0xFF         // rocks[cell][0]: too many nearby, test every rock
+
+typedef struct {
+    uint16_t dist[2][FLOW_CELLS];   // [cur] is read by enemies, [!cur] is being built
+    uint8_t  blocked[FLOW_CELLS];   // rocks, inflated by a margin
+    uint8_t  steps[FLOW_CELLS];     // bit k: step k to a neighbour is allowed (see flow.c)
+    uint8_t  rocks[FLOW_CELLS][2];  // rocks (index + 1, 0 = none) a bug in this cell can touch
+    uint16_t queue[4][FLOW_QCAP];   // Dial's buckets: distance mod 4
+    uint16_t qhead[4], qcount[4];
+    uint32_t level;                 // distance currently being expanded
+    uint32_t limit;                 // the build stops past this distance
+    uint32_t started;               // tick the current/last build started
+    uint8_t  cur;
+    bool     building;
+    bool     ready;                 // a complete field exists in dist[cur]
+    uint32_t builds;                // completed builds
+    uint32_t overflows;             // queue overflows (should stay 0)
+} flow_t;
+
+// --- Waves -----------------------------------------------------------------------
+
+typedef enum { WAVE_BREAK, WAVE_ACTIVE } wave_state_t;
+
+typedef struct {
+    uint16_t number;                       // current wave, 0 before the first
+    uint8_t  state;                        // wave_state_t
+    uint16_t timer;                        // ticks to the next group / next wave
+    uint16_t remaining[ENEMY_TYPE_COUNT];  // still to spawn in this wave
+    uint16_t total;                        // size of the current wave
+} waves_t;
 
 // --- World ---------------------------------------------------------------------
 
@@ -150,6 +218,9 @@ typedef enum {
     EV_RELOAD,        // a = player index
 } sim_event_type_t;
 
+// EV_HIT_ENEMY: `a` = enemy type, plus this flag when armor absorbed the hit.
+#define EV_HIT_ARMORED 0x80
+
 typedef struct {
     uint8_t type;  // sim_event_type_t
     uint8_t a;
@@ -163,9 +234,25 @@ typedef struct {
     uint8_t  scheme[SIM_MAX_PLAYERS]; // control_scheme_t per port
     bool     god_mode;
     bool     infinite_ammo;
-    bool     trickle_spawn;           // M1 stand-in for the wave spawner
+    bool     waves;                   // wave spawner on
+    bool     force_max_zoom;          // stress testing: camera fully zoomed out
     uint16_t enemy_cap;               // <= SIM_MAX_ENEMIES
+    uint16_t flow_budget;             // flow-field cells expanded per tick
 } sim_settings_t;
+
+// Profiling hook: the N64 layer can time each phase of sim_step without the
+// sim knowing anything about timers. Called at the start of each phase.
+typedef enum {
+    SIM_PHASE_PLAYERS,
+    SIM_PHASE_FLOW,
+    SIM_PHASE_ENEMIES,      // AI and movement
+    SIM_PHASE_CROWD,        // separation, rock collision, grid rebuild
+    SIM_PHASE_PROJECTILES,
+    SIM_PHASE_SPAWN,
+    SIM_PHASE_END,
+    SIM_PHASE_COUNT
+} sim_phase_t;
+typedef void (*sim_mark_fn)(void *ctx, sim_phase_t phase);
 
 // Live entity counts, reported by the debug overlay and the stats log.
 typedef struct {
@@ -185,12 +272,19 @@ typedef struct {
     player_t       players[SIM_MAX_PLAYERS];
     enemy_t        enemies[SIM_MAX_ENEMIES];
     projectile_t   projectiles[SIM_MAX_PROJECTILES];
+    uint16_t       active[SIM_MAX_ENEMIES]; // indices of active enemies, rebuilt each tick
+    uint16_t       active_count;
+    grid_t         grid;
+    crowd_t        crowd;             // scratch for separation, see crowd_t
+    flow_t         flow;
+    waves_t        waves;
     sim_event_t    events[SIM_MAX_EVENTS];
     uint16_t       event_count;       // cleared by the consumer, see sim_clear_events
     uint16_t       events_dropped;
-    uint16_t       spawn_timer;
     uint32_t       kills;
     sim_counts_t   counts;
+    sim_mark_fn    mark;              // optional profiling hook
+    void          *mark_ctx;
 } sim_t;
 
 void sim_init(sim_t *s, uint32_t seed);
@@ -204,8 +298,13 @@ void sim_clear_events(sim_t *s);
 void sim_spawn_player(sim_t *s, int port, vec2 pos);
 int  sim_spawn_enemy(sim_t *s, enemy_type_t type, vec2 pos);   // index or -1
 int  sim_spawn_enemies_around(sim_t *s, enemy_type_t type, int count, vec2 center);
+// Mixed swarm (half skitters, a third gnashers, the rest bulwarks) on a
+// ring between r_min and r_max metres around `center`.
+int  sim_spawn_mix(sim_t *s, int count, vec2 center, float r_min, float r_max);
 void sim_kill_all_enemies(sim_t *s);
 void sim_refill_ammo(sim_t *s, int port);
+// Bots take ports 2-4 (stress testing until real players join in M5).
+void sim_set_bots(sim_t *s, bool on);
 
 // Internal, exposed for the unit tests.
 void sim_push_event(sim_t *s, sim_event_type_t type, uint8_t a, vec2 pos, vec2 dir);

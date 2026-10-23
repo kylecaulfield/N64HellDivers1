@@ -11,5 +11,7 @@ void arena_generate(arena_t *a, rng_t *rng);
 
 // Resolve a circle against the arena: push out of rocks, clamp to bounds.
 void arena_resolve(const arena_t *a, vec2 *pos, float radius);
+// Just the bounds part of arena_resolve.
+void arena_clamp(const arena_t *a, vec2 *pos, float radius);
 
 #endif

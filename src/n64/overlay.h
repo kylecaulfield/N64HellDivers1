@@ -9,10 +9,22 @@
 #include "sim.h"
 #include "tickclock.h"
 
+// Sim phases timed through sim_t.mark: players (and the per-tick enemy list
+// and grid), flow, enemies (AI and movement), crowd (separation, rocks),
+// projectiles, spawn (spawner, camera, counts).
+#define TIMED_PHASES (SIM_PHASE_COUNT - 1)
+
 typedef struct {
-    uint32_t frame_us; // wall time since the previous frame started
-    uint32_t cpu_us;   // CPU busy time this frame (sim + render submission)
-    uint32_t sim_us;   // part of cpu_us spent in sim ticks
+    uint32_t frame_us;                // wall time since the previous frame started
+    uint32_t cpu_us;                  // CPU busy time this frame (sim + render submission)
+    uint32_t sim_us;                  // part of cpu_us spent in sim ticks
+    uint32_t phase_us[TIMED_PHASES];  // sim_us split by phase
+    uint32_t anim_us;                 // renderer: skeleton updates
+    uint32_t build_us;                // renderer: matrices and particles
+    uint32_t submit_us;               // issuing GPU commands (3D, HUD, overlay); grows when
+                                      // the RSP queue is full, i.e. when GPU-bound
+    uint16_t drawn_bugs;              // bugs on screen after culling
+    uint16_t skeletons;               // skeletons updated
 } frame_timing_t;
 
 void overlay_init(void);
@@ -25,5 +37,7 @@ void overlay_set_heap_baseline(void);
 void overlay_record(const frame_timing_t *t, const sim_t *sim, const tickclock_t *clock);
 // Draw into the currently attached framebuffer (call after the 3D scene).
 void overlay_draw(void);
+// "a/b/c/..." for the per-phase microseconds, as in the STATS and BENCH lines.
+void overlay_format_phases(char *buf, int size, const uint32_t us[TIMED_PHASES]);
 
 #endif

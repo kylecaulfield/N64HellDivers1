@@ -1,6 +1,8 @@
 #include "arena.h"
 #include "camera.h"
 #include "collide.h"
+#include "enemy.h"
+#include "grid.h"
 #include "sim_internal.h"
 #include "weapons.h"
 
@@ -55,10 +57,11 @@ static void update_dead(sim_t *s, int idx)
     if (p->state_timer && --p->state_timer)
         return;
     // Placeholder until Reinforce (M3): respawn where the camera is looking.
-    bool present = p->present;
+    bool present = p->present, bot = p->bot;
     uint8_t weapon = p->weapon;
     sim_spawn_player(s, idx, s->camera.target);
     p->present = present;
+    p->bot = bot;
     p->weapon = weapon;
 }
 
@@ -139,10 +142,14 @@ void players_update(sim_t *s, const player_intent_t intents[SIM_MAX_PLAYERS])
         player_t *p = &s->players[i];
         if (!sim_player_alive(p))
             continue;
-        for (int e = 0; e < SIM_MAX_ENEMIES; e++) {
+        const float reach = PLAYER_RADIUS + ENEMY_MAX_RADIUS;
+        grid_iter_t it;
+        grid_iter_init(&it, s, v2(p->pos.x - reach, p->pos.y - reach), v2(p->pos.x + reach, p->pos.y + reach));
+        int e;
+        while ((e = grid_iter_next(&it)) >= 0) {
             const enemy_t *en = &s->enemies[e];
             if (en->active)
-                push_out_circle(&p->pos, PLAYER_RADIUS, en->pos, GNASHER_RADIUS);
+                push_out_circle(&p->pos, PLAYER_RADIUS, en->pos, enemy_defs[en->type].radius);
         }
         arena_resolve(&s->arena, &p->pos, PLAYER_RADIUS);
         p->pos.x = clampf(p->pos.x, s->camera.leash_min.x, s->camera.leash_max.x);

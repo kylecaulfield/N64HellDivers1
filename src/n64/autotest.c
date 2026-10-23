@@ -70,7 +70,7 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
     vec2 to = target >= 0 ? v2_sub(sim->enemies[target].pos, me->pos) : v2(0.0f, 1.0f);
 
     if (frame == 0) {
-        phase(frame, "start: idle while the trickle spawner sends bugs", sim);
+        phase(frame, "start: idle while wave 1 closes in", sim);
         sim->settings.god_mode = true; // keep the script deterministic in outcome
     } else if (frame < F_WALK) {
         // idle
@@ -106,10 +106,10 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
             p->held = SIM_BTN_B; // hold B: switch to the shotgun
     } else if (frame < F_PAUSE) {
         if (frame == F_MENU) {
-            phase(frame, "open debug menu, spawn 10 gnashers", sim);
+            phase(frame, "open debug menu, spawn 10 mixed bugs", sim);
             in->toggle_menu = true;
         } else if (frame == F_MENU + 10 || frame == F_MENU + 15) {
-            in->pressed_any = SIM_BTN_DDOWN; // -> "Spawn 10 gnashers"
+            in->pressed_any = SIM_BTN_DDOWN; // -> "Spawn 10 mixed bugs"
         } else if (frame == F_MENU + 25) {
             in->pressed_any = SIM_BTN_A;
         } else if (frame == F_MENU + 60) {
@@ -127,10 +127,10 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
         }
         p->held = cbuttons_towards(v2_norm_or(to, v2(0.0f, 1.0f)));
     } else if (frame == F_END) {
-        bool ok = sim->kills >= 5 && shots_seen > 50 && me->weapon == 1;
-        debugf("AUTOTEST %s: kills %lu, shots %lu, weapon %s, bugs alive %u, dropped ticks see STATS\n",
+        bool ok = sim->kills >= 5 && shots_seen > 50 && me->weapon == 1 && sim->waves.number >= 1;
+        debugf("AUTOTEST %s: kills %lu, shots %lu, weapon %s, wave %u, bugs alive %u, dropped ticks see STATS\n",
                ok ? "PASS" : "FAIL", (unsigned long)sim->kills, (unsigned long)shots_seen,
-               me->weapon == 1 ? "shotgun" : "rifle", sim->counts.enemies);
+               me->weapon == 1 ? "shotgun" : "rifle", sim->waves.number, sim->counts.enemies);
     }
     in->pressed_any |= p->pressed;
 }

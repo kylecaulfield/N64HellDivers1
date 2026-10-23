@@ -5,6 +5,9 @@
 
 #include <string.h>
 
+#include "enemy.h"
+#include "flow.h"
+#include "grid.h"
 #include "sim.h"
 #include "sim_internal.h"
 
@@ -14,11 +17,20 @@ static inline void setup_empty(sim_t *s)
 {
     sim_init(s, 1234);
     s->arena.obstacle_count = 0;
-    s->settings.trickle_spawn = false;
+    flow_init(&s->flow, &s->arena);
+    s->settings.waves = false;
     sim_kill_all_enemies(s);
     for (int i = 0; i < SIM_MAX_PROJECTILES; i++)
         s->projectiles[i].active = false;
     sim_clear_events(s);
+}
+
+// Rebuild the per-tick enemy list and grid, for tests that call a single
+// system (e.g. projectiles_update) instead of sim_step.
+static inline void refresh_world(sim_t *s)
+{
+    enemies_collect_active(s);
+    grid_build(s);
 }
 
 static inline void inputs_none(sim_input_t in[SIM_MAX_PLAYERS])

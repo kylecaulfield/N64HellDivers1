@@ -35,17 +35,6 @@ void test_sim_step_tracks_ports(void)
     CHECK(!s.players[3].present);
 }
 
-void test_sim_trickle_spawns_up_to_limit(void)
-{
-    sim_t s;
-    sim_init(&s, 5);
-    s.settings.god_mode = true;
-    sim_input_t in[SIM_MAX_PLAYERS];
-    inputs_none(in);
-    step_n(&s, in, TRICKLE_INTERVAL * (TRICKLE_MAX_ALIVE + 4));
-    CHECK_EQ_INT(s.counts.enemies, TRICKLE_MAX_ALIVE);
-}
-
 void test_sim_events_accumulate_until_cleared(void)
 {
     sim_t s;

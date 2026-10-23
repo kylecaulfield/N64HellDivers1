@@ -23,6 +23,7 @@ void test_combat_swept_hit_no_tunnelling(void)
     REQUIRE(e >= 0);
     fire_one(&s, v2(0.0f, 0.0f));
     s.enemies[e].pos = v2(0.0f, 3.0f); // sample points are y = 0, 2, 4
+    refresh_world(&s);
     projectiles_update(&s);
     projectiles_update(&s);
     CHECK_EQ_INT(count_events(&s, EV_HIT_ENEMY), 1);
@@ -37,6 +38,7 @@ void test_combat_rifle_kills_gnasher_in_three(void)
     s.settings.enemy_cap = 1;
     int e = sim_spawn_enemy(&s, ENEMY_GNASHER, v2(0.0f, 8.0f));
     REQUIRE(e >= 0);
+    refresh_world(&s);
     for (int shot = 0; shot < 3; shot++) {
         fire_one(&s, v2(0.0f, 0.0f));
         for (int t = 0; t < 10; t++)
@@ -57,6 +59,7 @@ void test_combat_rock_blocks_bullet(void)
     s.arena.obstacles[0] = (obstacle_t){ .pos = v2(0.0f, 5.0f), .radius = 1.0f };
     s.arena.obstacle_count = 1;
     int e = sim_spawn_enemy(&s, ENEMY_GNASHER, v2(0.0f, 10.0f));
+    refresh_world(&s);
     fire_one(&s, v2(0.0f, 0.0f));
     for (int t = 0; t < 10; t++)
         projectiles_update(&s);
@@ -98,8 +101,9 @@ void test_enemy_chases_nearest_player(void)
     inputs_none(in);
     step_n(&s, in, SIM_HZ);
     CHECK_EQ_INT(s.enemies[e].target, 1);          // P2 is 10 m away, P1 ~12.8
-    CHECK_NEAR(s.enemies[e].pos.x, 8.0f, 0.01);
-    CHECK_NEAR(s.enemies[e].pos.y, 10.0f - GNASHER_SPEED, 0.05);
+    // Straight at P2 at full speed (via the flow field, so allow a little drift).
+    CHECK_NEAR(s.enemies[e].pos.x, 8.0f, 0.15);
+    CHECK_NEAR(s.enemies[e].pos.y, 10.0f - GNASHER_SPEED, 0.15);
 }
 
 void test_enemy_melee_windup_then_hit(void)

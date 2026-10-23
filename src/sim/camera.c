@@ -63,6 +63,8 @@ static bool framing(const sim_t *s, vec2 *target, float *dist)
     float need_v = ((mx.y - mn.y) * 0.5f + CAM_MARGIN) / e.below;
     float need_h = ((mx.x - mn.x) * 0.5f + CAM_MARGIN) / e.half_w;
     *dist = clampf(fmaxf(need_v, need_h), CAM_DIST_MIN, CAM_DIST_MAX);
+    if (s->settings.force_max_zoom)
+        *dist = CAM_DIST_MAX;
     return true;
 }
 

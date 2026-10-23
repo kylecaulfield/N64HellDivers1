@@ -53,6 +53,7 @@ static const uint8_t ICHOR[][3] = { { 150, 230, 60 }, { 110, 200, 40 } };
 static const uint8_t CHITIN[][3] = { { 120, 70, 160 }, { 150, 230, 60 }, { 70, 40, 100 } };
 static const uint8_t DUST[][3] = { { 190, 170, 140 }, { 150, 135, 110 } };
 static const uint8_t BLOOD[][3] = { { 230, 50, 40 }, { 160, 30, 30 } };
+static const uint8_t SPARK[][3] = { { 255, 230, 160 }, { 200, 200, 200 } };
 
 void fx_spawn_from_events(const sim_t *s)
 {
@@ -66,13 +67,21 @@ void fx_spawn_from_events(const sim_t *s)
             break;
         }
         case EV_HIT_ENEMY:
-            burst(e->pos, 0.7f, 4, 2.0f, 4.0f, 6, 10, 28, ICHOR, 2);
+            if (e->a & EV_HIT_ARMORED) // glancing off plate: sparks, no ichor
+                burst(e->pos, 1.0f, 3, 2.5f, 4.5f, 4, 7, 22, SPARK, 2);
+            else
+                burst(e->pos, 0.7f, 4, 2.0f, 4.0f, 6, 10, 28, ICHOR, 2);
             break;
         case EV_HIT_WORLD:
             burst(e->pos, 0.8f, 3, 1.0f, 2.5f, 6, 10, 26, DUST, 2);
             break;
         case EV_ENEMY_DIED:
-            burst(e->pos, 0.6f, 12, 1.5f, 5.0f, 14, 24, 44, CHITIN, 3);
+            if (e->a == ENEMY_SKITTER)
+                burst(e->pos, 0.3f, 6, 1.5f, 4.0f, 10, 18, 30, CHITIN, 3);
+            else if (e->a == ENEMY_BULWARK)
+                burst(e->pos, 1.0f, 20, 2.0f, 6.0f, 18, 30, 60, CHITIN, 3);
+            else
+                burst(e->pos, 0.6f, 12, 1.5f, 5.0f, 14, 24, 44, CHITIN, 3);
             break;
         case EV_PLAYER_HURT:
             burst(e->pos, 1.0f, 4, 1.5f, 3.0f, 6, 10, 30, BLOOD, 2);

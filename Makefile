@@ -3,6 +3,7 @@
 #   make              build the ROM -> hivebreakers.z64
 #   make test         build and run the host unit tests (no N64 toolchain needed)
 #   make AUTOTEST=1   scripted-input smoke-test ROM -> hivebreakers-autotest.z64
+#   make BENCH=1      stress bench at boot -> hivebreakers-bench.z64
 #   make toolchain    one-time: build the MIPS toolchain from source (30-60 min)
 #   make clean        remove game build output (keeps the built SDK)
 #   make distclean    also remove the built libdragon/Tiny3D SDK
@@ -39,6 +40,11 @@ all: rom
 # scripted bot that exercises every feature and logs AUTOTEST PASS/FAIL.
 ifeq ($(AUTOTEST),1)
 ROM_VARS := PROJECT=$(PROJECT)-autotest BUILD_DIR=build/rom-autotest AUTOTEST=1
+endif
+# BENCH=1 builds hivebreakers-bench.z64: the stress bench (see src/n64/bench.h)
+# starts by itself two seconds after boot and logs BENCH lines over USB.
+ifeq ($(BENCH),1)
+ROM_VARS := PROJECT=$(PROJECT)-bench BUILD_DIR=build/rom-bench BENCH=1
 endif
 
 rom: sdk
@@ -116,8 +122,8 @@ test: check-sim-purity $(TEST_DIR)/run_tests
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -rf build/rom build/rom-autotest build/filesystem build/gen build/test \
-	       $(PROJECT).z64 $(PROJECT)-autotest.z64
+	rm -rf build/rom build/rom-autotest build/rom-bench build/filesystem build/gen build/test \
+	       $(PROJECT).z64 $(PROJECT)-autotest.z64 $(PROJECT)-bench.z64
 
 distclean: clean
 	rm -rf build

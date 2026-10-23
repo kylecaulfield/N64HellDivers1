@@ -1,4 +1,5 @@
 #include "menu.h"
+#include "bench.h"
 #include "overlay.h"
 
 #include <libdragon.h>
@@ -7,21 +8,29 @@
 
 enum {
     ITEM_SCHEME,
-    ITEM_SPAWN_1,
-    ITEM_SPAWN_10,
-    ITEM_TRICKLE,
+    ITEM_WAVES,
+    ITEM_SPAWN,
+    ITEM_BOTS,
+    ITEM_ZOOM,
     ITEM_GOD,
     ITEM_INF_AMMO,
     ITEM_REFILL,
     ITEM_KILL_ALL,
     ITEM_CAP,
+    ITEM_FLOW,
+    ITEM_BENCH,
     ITEM_OVERLAY,
     ITEM_CLOSE,
     ITEM_COUNT
 };
 
+static const uint16_t SPAWN_SIZES[] = { 10, 25, 50, 100 };
+static const uint16_t FLOW_BUDGETS[] = { 256, 512, 1024, 2048, 4096 };
+#define COUNT_OF(a) (int)(sizeof(a) / sizeof(a[0]))
+
 static bool open;
 static int cursor;
+static int spawn_size; // index into SPAWN_SIZES
 
 bool menu_is_open(void)
 {
@@ -34,6 +43,19 @@ void menu_toggle(void)
     debugf("debug menu %s\n", open ? "open" : "closed");
 }
 
+static int step_index(int idx, int count, int dir)
+{
+    return (idx + (dir < 0 ? count - 1 : 1)) % count;
+}
+
+static int flow_index(uint16_t budget)
+{
+    for (int i = 0; i < COUNT_OF(FLOW_BUDGETS); i++)
+        if (FLOW_BUDGETS[i] >= budget)
+            return i;
+    return COUNT_OF(FLOW_BUDGETS) - 1;
+}
+
 // dir: -1/+1 for D-Left/D-Right, 0 for A.
 static void activate(sim_t *sim, int item, int dir)
 {
@@ -43,14 +65,22 @@ static void activate(sim_t *sim, int item, int dir)
         st->scheme[0] = (uint8_t)((st->scheme[0] + 1) % SCHEME_COUNT);
         debugf("P1 control scheme %c\n", st->scheme[0] == SCHEME_A ? 'A' : 'B');
         break;
-    case ITEM_SPAWN_1:
-        sim_spawn_enemies_around(sim, ENEMY_GNASHER, 1, sim->camera.target);
+    case ITEM_WAVES:
+        st->waves = !st->waves;
         break;
-    case ITEM_SPAWN_10:
-        sim_spawn_enemies_around(sim, ENEMY_GNASHER, 10, sim->camera.target);
+    case ITEM_SPAWN:
+        if (dir)
+            spawn_size = step_index(spawn_size, COUNT_OF(SPAWN_SIZES), dir);
+        else
+            sim_spawn_mix(sim, SPAWN_SIZES[spawn_size], sim->camera.target, SPAWN_RING_MIN, SPAWN_RING_MAX);
         break;
-    case ITEM_TRICKLE:
-        st->trickle_spawn = !st->trickle_spawn;
+    case ITEM_BOTS: {
+        bool on = !sim->players[1].bot;
+        sim_set_bots(sim, on);
+        break;
+    }
+    case ITEM_ZOOM:
+        st->force_max_zoom = !st->force_max_zoom;
         break;
     case ITEM_GOD:
         st->god_mode = !st->god_mode;
@@ -76,6 +106,14 @@ static void activate(sim_t *sim, int item, int dir)
         debugf("enemy cap %d\n", cap);
         break;
     }
+    case ITEM_FLOW:
+        st->flow_budget = FLOW_BUDGETS[step_index(flow_index(st->flow_budget), COUNT_OF(FLOW_BUDGETS), dir ? dir : 1)];
+        debugf("flow budget %u cells/tick\n", st->flow_budget);
+        break;
+    case ITEM_BENCH:
+        bench_start(sim);
+        menu_toggle(); // the bench runs with the game unpaused
+        break;
     case ITEM_OVERLAY:
         overlay_toggle();
         break;
@@ -113,29 +151,30 @@ void menu_draw(const sim_t *sim)
     if (!open)
         return;
     const sim_settings_t *st = &sim->settings;
-    const int x = 64, y0 = 44, lh = 12;
+    const int x = 56, y0 = 30, lh = 12;
 
     rdpq_set_mode_fill(RGBA32(10, 12, 18, 0xFF));
-    rdpq_fill_rectangle(x - 10, y0 - 22, x + 202, y0 + ITEM_COUNT * lh + 4);
+    rdpq_fill_rectangle(x - 10, y0 - 22, x + 218, y0 + (ITEM_COUNT + 1) * lh + 4);
     rdpq_text_printf(NULL, FONT, x, y0 - 8, "DEBUG MENU (paused)");
 
     for (int i = 0; i < ITEM_COUNT; i++) {
         int y = y0 + (i + 1) * lh;
-        const char *mark = i == cursor ? ">" : " ";
+        const char *m = i == cursor ? ">" : " ";
         switch (i) {
-        case ITEM_SCHEME:
-            rdpq_text_printf(NULL, FONT, x, y, "%s P1 controls: %s", mark, st->scheme[0] == SCHEME_B ? "B" : "A");
-            break;
-        case ITEM_SPAWN_1:   rdpq_text_printf(NULL, FONT, x, y, "%s Spawn 1 gnasher", mark); break;
-        case ITEM_SPAWN_10:  rdpq_text_printf(NULL, FONT, x, y, "%s Spawn 10 gnashers", mark); break;
-        case ITEM_TRICKLE:   rdpq_text_printf(NULL, FONT, x, y, "%s Trickle spawn: %s", mark, on_off(st->trickle_spawn)); break;
-        case ITEM_GOD:       rdpq_text_printf(NULL, FONT, x, y, "%s God mode: %s", mark, on_off(st->god_mode)); break;
-        case ITEM_INF_AMMO:  rdpq_text_printf(NULL, FONT, x, y, "%s Infinite ammo: %s", mark, on_off(st->infinite_ammo)); break;
-        case ITEM_REFILL:    rdpq_text_printf(NULL, FONT, x, y, "%s Refill ammo", mark); break;
-        case ITEM_KILL_ALL:  rdpq_text_printf(NULL, FONT, x, y, "%s Kill all bugs", mark); break;
-        case ITEM_CAP:       rdpq_text_printf(NULL, FONT, x, y, "%s Enemy cap: %u <>", mark, st->enemy_cap); break;
-        case ITEM_OVERLAY:   rdpq_text_printf(NULL, FONT, x, y, "%s Stats overlay: %s", mark, on_off(overlay_is_visible())); break;
-        case ITEM_CLOSE:     rdpq_text_printf(NULL, FONT, x, y, "%s Close", mark); break;
+        case ITEM_SCHEME:   rdpq_text_printf(NULL, FONT, x, y, "%s P1 controls: %s", m, st->scheme[0] == SCHEME_B ? "B" : "A"); break;
+        case ITEM_WAVES:    rdpq_text_printf(NULL, FONT, x, y, "%s Waves: %s", m, on_off(st->waves)); break;
+        case ITEM_SPAWN:    rdpq_text_printf(NULL, FONT, x, y, "%s Spawn %u mixed bugs <>", m, SPAWN_SIZES[spawn_size]); break;
+        case ITEM_BOTS:     rdpq_text_printf(NULL, FONT, x, y, "%s Bots P2-P4: %s", m, on_off(sim->players[1].bot)); break;
+        case ITEM_ZOOM:     rdpq_text_printf(NULL, FONT, x, y, "%s Force max zoom: %s", m, on_off(st->force_max_zoom)); break;
+        case ITEM_GOD:      rdpq_text_printf(NULL, FONT, x, y, "%s God mode: %s", m, on_off(st->god_mode)); break;
+        case ITEM_INF_AMMO: rdpq_text_printf(NULL, FONT, x, y, "%s Infinite ammo: %s", m, on_off(st->infinite_ammo)); break;
+        case ITEM_REFILL:   rdpq_text_printf(NULL, FONT, x, y, "%s Refill ammo", m); break;
+        case ITEM_KILL_ALL: rdpq_text_printf(NULL, FONT, x, y, "%s Kill all bugs", m); break;
+        case ITEM_CAP:      rdpq_text_printf(NULL, FONT, x, y, "%s Enemy cap: %u <>", m, st->enemy_cap); break;
+        case ITEM_FLOW:     rdpq_text_printf(NULL, FONT, x, y, "%s Flow budget: %u <>", m, st->flow_budget); break;
+        case ITEM_BENCH:    rdpq_text_printf(NULL, FONT, x, y, "%s Run stress bench (72 s)", m); break;
+        case ITEM_OVERLAY:  rdpq_text_printf(NULL, FONT, x, y, "%s Stats overlay: %s", m, on_off(overlay_is_visible())); break;
+        case ITEM_CLOSE:    rdpq_text_printf(NULL, FONT, x, y, "%s Close", m); break;
         }
     }
 }

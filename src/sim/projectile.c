@@ -1,4 +1,6 @@
 #include "collide.h"
+#include "enemy.h"
+#include "grid.h"
 #include "sim_internal.h"
 
 // Bullets move up to 2 m per tick, more than a bug is wide, so every step is
@@ -17,12 +19,18 @@ static void update_one(sim_t *s, projectile_t *pr)
     int hit_enemy = -1;
     bool hit_world = false;
 
-    for (int i = 0; i < SIM_MAX_ENEMIES; i++) {
-        const enemy_t *e = &s->enemies[i];
+    // Only bugs in grid cells the segment could touch.
+    const float r = ENEMY_MAX_RADIUS;
+    grid_iter_t it;
+    grid_iter_init(&it, s, v2(fminf(p0.x, p1.x) - r, fminf(p0.y, p1.y) - r),
+                   v2(fmaxf(p0.x, p1.x) + r, fmaxf(p0.y, p1.y) + r));
+    int ei;
+    while ((ei = grid_iter_next(&it)) >= 0) {
+        const enemy_t *e = &s->enemies[ei];
         float t;
-        if (e->active && segment_circle(p0, p1, e->pos, GNASHER_RADIUS, &t) && t < best_t) {
+        if (e->active && segment_circle(p0, p1, e->pos, enemy_defs[e->type].radius, &t) && t < best_t) {
             best_t = t;
-            hit_enemy = i;
+            hit_enemy = ei;
         }
     }
     for (int i = 0; i < s->arena.obstacle_count; i++) {
@@ -38,7 +46,7 @@ static void update_one(sim_t *s, projectile_t *pr)
     if (best_t <= 1.0f) {
         vec2 at = v2_add(p0, v2_scale(step, best_t));
         if (hit_enemy >= 0)
-            enemy_damage(s, hit_enemy, pr->damage, at);
+            enemy_damage(s, hit_enemy, pr->damage, at, v2_norm_or(step, v2(0.0f, 1.0f)));
         else if (hit_world)
             sim_push_event(s, EV_HIT_WORLD, 0, at, v2_norm_or(step, v2(0.0f, 1.0f)));
         pr->active = false;

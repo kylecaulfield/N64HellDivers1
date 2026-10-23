@@ -34,7 +34,8 @@ vec2 aim_assist(const sim_t *s, vec2 origin, vec2 dir, control_scheme_t scheme)
     int best = -1;
     float best_score = -2.0f;
     vec2 best_dir = dir;
-    for (int i = 0; i < SIM_MAX_ENEMIES; i++) {
+    for (int n = 0; n < s->active_count; n++) {
+        int i = s->active[n];
         const enemy_t *e = &s->enemies[i];
         if (!e->active)
             continue;

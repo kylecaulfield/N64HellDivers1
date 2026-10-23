@@ -46,10 +46,14 @@ jobs:
       - name: Build autotest ROM
         run: make AUTOTEST=1
 
+      - name: Build bench ROM
+        run: make BENCH=1
+
       - uses: actions/upload-artifact@v4
         with:
           name: hivebreakers-${{ github.sha }}
           path: |
             hivebreakers.z64
             hivebreakers-autotest.z64
+            hivebreakers-bench.z64
           if-no-files-found: error

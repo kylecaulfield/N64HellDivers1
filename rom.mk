@@ -1,8 +1,8 @@
 # ROM build. Invoked by the top-level Makefile with N64_INST pointing at the
 # SDK built from the pinned submodules (build/sdk). Not meant to be run directly.
 
-PROJECT   = hivebreakers
-BUILD_DIR = build/rom
+PROJECT   ?= hivebreakers
+BUILD_DIR ?= build/rom
 SOURCE_DIR = src
 FS_DIR    = build/filesystem
 GEN_DIR   = build/gen
@@ -23,6 +23,10 @@ N64_ROM_REGIONFREE = 1
 N64_CFLAGS += -std=gnu17 -Wall -Wextra -Werror -Wshadow -Wdouble-promotion \
               -ffp-contract=off -isystem $(N64_INCLUDEDIR) \
               -Isrc/sim -Isrc/n64 -I$(BUILD_DIR)/gen
+
+ifeq ($(AUTOTEST),1)
+N64_CFLAGS += -DAUTOTEST
+endif
 
 SRC := $(wildcard src/sim/*.c) $(wildcard src/n64/*.c)
 OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)

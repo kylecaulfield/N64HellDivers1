@@ -72,6 +72,11 @@ void overlay_toggle(void)
     debugf("overlay %s\n", ov.visible ? "on" : "off");
 }
 
+bool overlay_is_visible(void)
+{
+    return ov.visible;
+}
+
 void overlay_set_heap_baseline(void)
 {
     ov.heap_baseline = mem_stats().heap_used;

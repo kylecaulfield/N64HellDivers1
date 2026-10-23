@@ -324,9 +324,24 @@ def rock(seed, base_color, size):
     return out
 
 
-def ground_tile():
-    """4x4 m ground quad, tiled by the renderer."""
-    return quad((-2, 0, 2), (2, 0, 2), (2, 0, -2), (-2, 0, -2), GROUND)
+def arena_floor():
+    """The whole 64x64 m arena floor, 4 m tiles with colour variation so
+    movement reads on screen. The outermost ring of tiles is darker to mark
+    the arena edge. Matches ARENA_HALF_SIZE in src/sim/tuning.h."""
+    rnd = random.Random(99)
+    half, tile = 32.0, 4.0
+    n = int(2 * half / tile)
+    tris = []
+    for iz in range(n):
+        for ix in range(n):
+            x0, z0 = -half + ix * tile, -half + iz * tile
+            x1, z1 = x0 + tile, z0 + tile
+            k = 0.9 + rnd.random() * 0.14 + (0.04 if (ix + iz) % 2 else 0.0)
+            if ix in (0, n - 1) or iz in (0, n - 1):
+                k *= 0.7
+            col = tuple(min(255, int(c * k)) for c in GROUND)
+            tris += quad((x0, 0, z1), (x1, 0, z1), (x1, 0, z0), (x0, 0, z0), col)
+    return tris
 
 
 MODELS = {
@@ -340,7 +355,7 @@ MODELS = {
     "rock_a": lambda: rock(11, ROCK_A, 1.6),
     "rock_b": lambda: rock(23, ROCK_B, 2.4),
     "rock_c": lambda: rock(37, ROCK_C, 1.0),
-    "ground": ground_tile,
+    "ground": arena_floor,
 }
 
 # ---------------------------------------------------------------------------

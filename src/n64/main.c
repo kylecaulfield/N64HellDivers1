@@ -8,9 +8,13 @@
 #include <libdragon.h>
 #include <t3d/t3d.h>
 
+#include "autotest.h"
 #include "boot.h"
+#include "fx.h"
 #include "gpu_timing.h"
+#include "hud.h"
 #include "input.h"
+#include "menu.h"
 #include "overlay.h"
 #include "render.h"
 #include "sim.h"
@@ -49,7 +53,9 @@ int main(void)
     overlay_init();
     gpu_timing_init();
     render_init();
+    fx_init();
     sim_init(&sim, 0xC0FFEE);
+    render_bind_world(&sim);
 
     vi_install_vblank_handler(on_vblank, NULL);
     tickclock_t clock;
@@ -59,6 +65,7 @@ int main(void)
     input_frame_t input;
     uint64_t last_frame = get_ticks();
     uint32_t frames = 0;
+    bool paused = false;
 
     for (;;) {
         uint32_t ticks;
@@ -70,19 +77,39 @@ int main(void)
         last_frame = t_start;
 
         input_poll(&input);
+#ifdef AUTOTEST
+        autotest_input(&input, frames, &sim);
+#endif
         if (input.toggle_overlay)
             overlay_toggle();
+        if (input.toggle_menu)
+            menu_toggle();
+        else if (menu_is_open())
+            menu_update(input.pressed_any, &sim);
+        else if (input.pressed_any & SIM_BTN_START)
+            paused = !paused;
 
-        for (uint32_t i = 0; i < ticks; i++) {
+        // The sim only runs while nothing is covering the game. Effects
+        // freeze along with it.
+        uint32_t run = (paused || menu_is_open()) ? 0 : ticks;
+        for (uint32_t i = 0; i < run; i++) {
             sim_step(&sim, input.ports);
             // Button edges belong to the first tick only.
             for (int p = 0; p < SIM_MAX_PLAYERS; p++)
                 input.ports[p].pressed = 0;
         }
+#ifdef AUTOTEST
+        autotest_observe(&sim);
+#endif
+        fx_spawn_from_events(&sim);
+        sim_clear_events(&sim);
+        fx_update(run);
+        sim.counts.particles = (uint16_t)fx_count();
         uint64_t t_sim = get_ticks();
 
         uint32_t wait_us = render_scene(&sim);
-        render_hud();
+        hud_draw(&sim, paused && !menu_is_open());
+        menu_draw(&sim);
         overlay_draw();
         render_end();
         gpu_timing_frame();

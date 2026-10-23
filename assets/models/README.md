@@ -13,8 +13,8 @@ Makefile changes are needed.
 | `dropship.glb` | Extraction dropship |
 | `beacon.glb` | Calldown beacon |
 | `turret.glb` | Sentry turret |
-| `rock_a.glb`, `rock_b.glb`, `rock_c.glb` | Arena obstacles |
-| `ground.glb` | 4x4 m ground tile |
+| `rock_a.glb`, `rock_b.glb`, `rock_c.glb` | Arena obstacles. Collision radii are 0.9, 1.35 and 0.55 m (`rock_radius` in `src/sim/arena.c`); keep a replacement about that size or update the table |
+| `ground.glb` | The whole 64x64 m arena floor, centred on the origin |
 
 ## Export rules (Blender + Fast64)
 

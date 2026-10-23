@@ -11,7 +11,9 @@
 
 typedef struct {
     sim_input_t ports[SIM_MAX_PLAYERS];
-    bool toggle_overlay; // L + D-Up pressed on any controller
+    uint16_t pressed_any;   // SIM_BTN_* pressed this frame on any controller
+    bool toggle_overlay;    // L + D-Up
+    bool toggle_menu;       // L + D-Down
 } input_frame_t;
 
 void input_init(void);

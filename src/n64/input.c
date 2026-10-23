@@ -30,7 +30,9 @@ void input_init(void)
 void input_poll(input_frame_t *out)
 {
     joypad_poll();
+    out->pressed_any = 0;
     out->toggle_overlay = false;
+    out->toggle_menu = false;
 
     JOYPAD_PORT_FOREACH(port) {
         sim_input_t *in = &out->ports[port];
@@ -44,8 +46,13 @@ void input_poll(input_frame_t *out)
         in->pressed = to_sim_buttons(joypad_get_buttons_pressed(port));
         in->stick_x = inputs.stick_x;
         in->stick_y = inputs.stick_y;
+        out->pressed_any |= in->pressed;
 
-        if ((in->held & SIM_BTN_L) && (in->pressed & SIM_BTN_DUP))
-            out->toggle_overlay = true;
+        if (in->held & SIM_BTN_L) {
+            if (in->pressed & SIM_BTN_DUP)
+                out->toggle_overlay = true;
+            if (in->pressed & SIM_BTN_DDOWN)
+                out->toggle_menu = true;
+        }
     }
 }

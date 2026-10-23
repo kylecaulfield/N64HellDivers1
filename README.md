@@ -9,8 +9,10 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M0** (toolchain, pinned SDK, hello-world ROM with debug
-overlay and USB logging, host test harness, placeholder model pipeline).
+**Status: milestone M1**: one player in a bounded arena with rocks, the shared
+camera, both control schemes, rifle and shotgun with ammo and reloads, dive,
+and one enemy type (the gnasher). Death respawns you after 3 s; Reinforce
+replaces that in M3.
 
 ## Pinned dependencies
 
@@ -67,6 +69,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu and pauses, then logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
 
@@ -92,6 +95,29 @@ the USB debug log streams to the terminal and to `logs/usb-<timestamp>.log`
 (`-d <file> -b`). Ctrl+C to quit. Set `UNFLOADER=/path/to/UNFLoader` if it is
 not on your PATH.
 
+## Controls
+
+Pick a scheme per player in the debug menu (default A).
+
+| | Scheme A | Scheme B |
+|---|---|---|
+| Move | Stick | Stick |
+| Aim | Stick (you face where you walk) | C-buttons, 8 directions (two adjacent = diagonal) |
+| Fire | Hold **Z** (facing locks, so you can strafe) | Hold a C-button |
+| Dive | **A** | **Z** |
+| Reload / switch weapon | Tap **B** / hold **B** | Tap **B** / hold **B** |
+| Calldown codes (M3) | Hold **R**: C-buttons enter the code, no firing | same |
+
+Both schemes have a soft aim-assist cone (about 10 degrees for A, which aims
+precisely with the stick; about 23 degrees for B, half an 8-way sector).
+Firing on an empty magazine reloads automatically. **Start** pauses and shows
+the controls. Debug combos all start with **L**, which neither scheme uses:
+
+| Combo | Does |
+|---|---|
+| L + D-Up | Stats overlay on/off |
+| L + D-Down | Debug menu (pauses): P1 control scheme, spawn 1 or 10 gnashers, trickle spawn, god mode, infinite ammo, refill ammo, kill all bugs, enemy cap |
+
 ## Testing in an emulator
 
 Use a current [ares](https://ares-emu.net/) (distribution packages can be
@@ -111,7 +137,7 @@ FPS 29.91 frame 33.43ms max ... measured frame rate, average and worst frame tim
 CPU 5.80ms max 8.20ms sim ...   CPU busy time per frame (excludes waiting for vblank / a free framebuffer)
 RDP 4.20ms  GPU done 7.90ms     RDP busy (hardware counter); GPU done = submit start -> RDP finished
 TICK 1234 dropped 0             sim ticks; dropped = ticks skipped because a frame ran long
-ENT P1 E0 B0 FX0 CD0            players (controllers), enemies, bullets, effects, calldowns
+ENT P1 E3 B4 FX20 CD0           players in the mission, enemies, bullets, effect particles, calldowns
 RAM 1211/8192K heap 818K        RDRAM in use (code+data+heap) / installed; heap alone
 ```
 
@@ -139,7 +165,9 @@ line: gameplay code must never allocate.
 
 ```
 src/sim/        pure-C simulation core: no libdragon includes, builds on the host
-src/n64/        thin N64 layer: boot checks, input, rendering, overlay, timing
+                controls, weapons, player, enemy, projectile, arena, camera, tuning.h
+src/n64/        thin N64 layer: boot checks, input, rendering, effects, HUD,
+                debug menu, overlay, timing, autotest bot
 tests/          host unit tests for src/sim (make test)
 tools/          toolchain setup, placeholder model generator, deploy scripts
 assets/models/  drop-in model overrides (see assets/models/README.md)

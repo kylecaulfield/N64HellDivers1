@@ -17,6 +17,7 @@ typedef struct {
 
 void overlay_init(void);
 void overlay_toggle(void);
+bool overlay_is_visible(void);
 // Snapshot the heap usage; any growth after this point is flagged, because
 // gameplay must not allocate. Call once loading is finished.
 void overlay_set_heap_baseline(void);

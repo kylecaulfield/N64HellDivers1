@@ -2,6 +2,7 @@
 #
 #   make              build the ROM -> hivebreakers.z64
 #   make test         build and run the host unit tests (no N64 toolchain needed)
+#   make AUTOTEST=1   scripted-input smoke-test ROM -> hivebreakers-autotest.z64
 #   make toolchain    one-time: build the MIPS toolchain from source (30-60 min)
 #   make clean        remove game build output (keeps the built SDK)
 #   make distclean    also remove the built libdragon/Tiny3D SDK
@@ -34,8 +35,14 @@ SDK_VARS        := N64_INST=$(SDK) N64_GCCPREFIX=$(N64_GCCPREFIX)
 
 all: rom
 
+# AUTOTEST=1 builds hivebreakers-autotest.z64: controller 1 is replaced by a
+# scripted bot that exercises every feature and logs AUTOTEST PASS/FAIL.
+ifeq ($(AUTOTEST),1)
+ROM_VARS := PROJECT=$(PROJECT)-autotest BUILD_DIR=build/rom-autotest AUTOTEST=1
+endif
+
 rom: sdk
-	$(MAKE) -f rom.mk $(SDK_VARS) -j$(JOBS)
+	$(MAKE) -f rom.mk $(SDK_VARS) $(ROM_VARS) -j$(JOBS)
 
 sdk: $(LIBDRAGON_STAMP) $(TINY3D_STAMP)
 
@@ -109,7 +116,8 @@ test: check-sim-purity $(TEST_DIR)/run_tests
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -rf build/rom build/filesystem build/gen build/test $(PROJECT).z64
+	rm -rf build/rom build/rom-autotest build/filesystem build/gen build/test \
+	       $(PROJECT).z64 $(PROJECT)-autotest.z64
 
 distclean: clean
 	rm -rf build

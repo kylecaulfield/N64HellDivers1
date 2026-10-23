@@ -3,8 +3,8 @@
 
 #include "sim.h"
 
-// Framebuffers in flight. Per-instance matrices are buffered this many times
-// because the RSP may still be reading last frame's copy.
+// Framebuffers in flight. Per-instance matrices and particle buffers are
+// buffered this many times because the RSP may still be reading last frame's.
 #define FB_COUNT 3
 
 // Render units per metre. Models are imported at 64 units per metre (the
@@ -12,11 +12,11 @@
 #define WORLD_SCALE 16.0f
 
 void render_init(void);
-// Attach the next framebuffer and draw the 3D scene. Returns the time in
-// microseconds spent blocked waiting for a free framebuffer.
+// Build the static matrices (floor, rocks). Call after the sim made its arena.
+void render_bind_world(const sim_t *sim);
+// Attach the next framebuffer and draw the 3D scene and particles. Returns
+// the time in microseconds spent blocked waiting for a free framebuffer.
 uint32_t render_scene(const sim_t *sim);
-// Draw HUD text that is always visible (build id, controls hint).
-void render_hud(void);
 // Present the frame.
 void render_end(void);
 

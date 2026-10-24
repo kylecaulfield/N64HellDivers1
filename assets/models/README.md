@@ -6,7 +6,7 @@ Makefile changes are needed.
 
 | File | What it is |
 |---|---|
-| `soldier.glb` | Player trooper. Skinned, animations `run` and `idle`. Budget ~100 triangles |
+| `soldier.glb` | Player trooper. Skinned, animations `run` and `idle`. Budget ~100 triangles. Paint the parts that take the player's colour white with vertex alpha 0 (everything else alpha 1); one material |
 | `skitter.glb` | Fast swarmer bug. Skinned, animations `walk` and `attack`. Budget ~45 triangles |
 | `gnasher.glb` | Standard warrior bug. Skinned, `walk` and `attack`. Budget ~70 triangles |
 | `bulwark.glb` | Slow armored brute bug. Skinned, `walk` and `attack`. Budget ~100 triangles |
@@ -31,6 +31,10 @@ Makefile changes are needed.
 - Skinned models: one armature per file, no transforms on the armature's
   parent objects (the importer refuses them). One bone per vertex (the
   importer uses only the first joint).
+- The soldier: the renderer replaces its material's combiner with one that
+  puts the player's colour wherever vertex alpha is 0 (lit like the rest), so
+  keep it to one material and paint those parts white. A soldier with
+  several materials, or no alpha-0 vertices, draws untinted.
 
 ## Budgets for the bugs
 

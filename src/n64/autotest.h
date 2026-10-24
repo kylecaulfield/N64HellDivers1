@@ -4,9 +4,11 @@
 // Scripted-input smoke test, only in `make AUTOTEST=1` builds
 // (hivebreakers-autotest.z64). It drives controller 1 through every feature
 // so far (moving, both control schemes, firing at bugs, diving, the debug
-// menu, pausing, every calldown, picking up the machine gun and a resupply,
-// dying, and bots reinforcing each other) so a ROM can be exercised in ares
-// with no controller, and logs "AUTOTEST PASS/FAIL" with a summary.
+// menu, pausing and switching schemes, every calldown, picking up the
+// machine gun and a resupply, dying, bots reinforcing each other, a quick
+// mission through to the results screen and the next mission), and plugs in
+// controllers 2 and 4 to join, fight and leave, so a ROM can be exercised
+// in ares with no controller. Logs "AUTOTEST PASS/FAIL" with a summary.
 
 #include <stdint.h>
 

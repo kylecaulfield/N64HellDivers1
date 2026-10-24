@@ -19,8 +19,10 @@
 #define F_PICKUPS     1200  // walk to the MG case, then the crate
 #define F_DIE         1350  // solo death: emergency reinforce after 5 s
 #define F_BOTS        1520  // bots on; one dies and another reinforces it
-#define F_MISSION     1720  // quick mission: both zones, extraction, results, new mission
-#define F_DEADLINE    6000  // FAIL if the mission loop hasn't finished by now
+#define F_JOIN        1720  // bots off; controller 2 plugs in, joins by pod and fights
+#define F_TAKEOVER    1800  // bots on; controller 4 joins (takes over its bot), then unplugs
+#define F_MISSION     1900  // quick mission with P2: both zones, extraction, results, new mission
+#define F_DEADLINE    6200  // FAIL if the mission loop hasn't finished by now
 
 static const struct {
     uint32_t frame;
@@ -43,6 +45,8 @@ static uint32_t zones_captured, extracted, extract_f0, results_frame, contested;
 static bool hold_seen, success_seen, new_mission, done;
 static uint32_t m3_kills;
 static unsigned m3_wave, m3_reinforcements;
+static bool scheme_switched, p2_pod, p4_took_over, p4_left, p2_next_mission;
+static uint32_t p2_shots;
 
 static int nearest_enemy(const sim_t *sim, vec2 from)
 {
@@ -112,10 +116,31 @@ static int find_pickup(const sim_t *sim, pickup_type_t type)
     return -1;
 }
 
+// Player 2 (scheme A): towards `dest` while far from it, turning to the
+// nearest bug and firing with Z once one is close.
+static void p2_script(sim_input_t *q, const sim_t *sim, vec2 dest)
+{
+    const player_t *p2 = &sim->players[1];
+    int t = nearest_enemy(sim, p2->pos);
+    if (v2_dist2(dest, p2->pos) > 3.0f * 3.0f) {
+        stick_towards(q, v2_sub(dest, p2->pos));
+    } else if (t >= 0 && v2_dist2(sim->enemies[t].pos, p2->pos) < 14.0f * 14.0f) {
+        stick_towards(q, v2_sub(sim->enemies[t].pos, p2->pos));
+        q->stick_x /= 4; // just turn, facing locks once Z is down
+        q->stick_y /= 4;
+        q->held = (sim->tick / 10) % 2 ? SIM_BTN_Z : 0;
+    }
+}
+
 void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
 {
+    // Controllers 2 and 4 are "plugged in" by the script for the M5 part.
+    static bool p2_plugged, p4_plugged;
     sim_input_t *p = &in->ports[0];
     *p = (sim_input_t){ .connected = true };
+    sim_input_t *p2 = &in->ports[1], *p4 = &in->ports[3];
+    *p2 = (sim_input_t){ .connected = p2_plugged };
+    *p4 = (sim_input_t){ .connected = p4_plugged };
     in->pressed_any = 0;
     in->toggle_menu = false;
 
@@ -171,13 +196,17 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
         }
     } else if (frame < F_UNPAUSE) {
         if (frame == F_PAUSE) {
-            phase(frame, "pause", sim);
-            in->pressed_any = SIM_BTN_START;
+            phase(frame, "pause; A switches P1's scheme to A and back", sim);
+            p->pressed = SIM_BTN_START;
+        } else if (frame == F_PAUSE + 20 || frame == F_PAUSE + 40) {
+            p->pressed = SIM_BTN_A;
+        } else if (frame == F_PAUSE + 21) {
+            scheme_switched = sim->settings.scheme[0] == SCHEME_A;
         }
     } else if (frame < F_CALLDOWNS) {
         if (frame == F_UNPAUSE) {
             phase(frame, "unpause, fight with the shotgun", sim);
-            in->pressed_any = SIM_BTN_START;
+            p->pressed = SIM_BTN_START;
         }
         p->held = cbuttons_towards(v2_norm_or(to, v2(0.0f, 1.0f)));
         shotgun_seen |= me->weapon == 1;
@@ -200,13 +229,42 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
             phase(frame, "P1 dies alone: emergency reinforce", sim);
             sim_kill_player(sim, 0);
         }
-    } else if (frame < F_MISSION) {
+    } else if (frame < F_JOIN) {
         if (frame == F_BOTS) {
             phase(frame, "bots on; P3 dies and a bot reinforces it", sim);
             sim_set_bots(sim, true);
         } else if (frame == F_BOTS + 10) {
             sim_kill_player(sim, 2);
         }
+    } else if (frame < F_TAKEOVER) {
+        if (frame == F_JOIN) {
+            phase(frame, "bots off; controller 2 plugs in and joins by pod", sim);
+            sim_set_bots(sim, false);
+            p2_plugged = p2->connected = true;
+            p2->pressed = SIM_BTN_START;
+        }
+        p2_pod |= sim->players[1].state == PSTATE_DROPPING && !sim->players[1].bot;
+        if (frame > F_JOIN)
+            p2_script(p2, sim, me->pos);
+    } else if (frame < F_MISSION) {
+        if (frame == F_TAKEOVER) {
+            phase(frame, "bots on; controller 4 joins, taking over its bot, then unplugs", sim);
+            sim_set_bots(sim, true);
+            p4_plugged = p4->connected = true;
+            p4->pressed = SIM_BTN_START;
+        } else if (frame == F_TAKEOVER + 2) {
+            p4_took_over = !sim->players[3].bot && (sim->humans & 8);
+        } else if (frame == F_TAKEOVER + 30) {
+            p4_plugged = p4->connected = false; // leaves after a second: a bot carries on
+        } else if (frame == F_TAKEOVER + 40) {
+            phase(frame, "P1 and P2 hold R: two calldown panels", sim);
+        } else if (frame == F_MISSION - 1) {
+            p4_left = sim->players[3].bot && sim->players[3].active && !(sim->humans & 8);
+            p2_shots = sim->mission.stats.players[1].shots;
+        }
+        p2_script(p2, sim, me->pos);
+        if (frame >= F_TAKEOVER + 40 && frame < F_TAKEOVER + 80) // released with no code: nothing thrown
+            p->held = p2->held = SIM_BTN_R;
     } else if (!done && frame < F_DEADLINE && !new_mission) {
         const mission_t *m = &sim->mission;
         if (frame == F_MISSION) {
@@ -222,7 +280,7 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
                 results_frame = frame;
                 phase(frame, sim->mission.phase == MISSION_SUCCESS ? "results: success" : "results: failed", sim);
             } else if (frame == results_frame + 60) {
-                in->pressed_any = SIM_BTN_START;
+                p->pressed = SIM_BTN_START;
             }
         } else if (m->phase == MISSION_EXTRACT && mission_can_call_extraction(sim, 0)) {
             if (!extract_f0)
@@ -251,26 +309,36 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
                 contested = 0;
             }
         }
+        // P2 sticks with P1 until the dropship is down, then boards.
+        if (!mission_over(sim))
+            p2_script(p2, sim, m->phase == MISSION_BOARDING ? sim->arena.lz : me->pos);
     } else if (!done) {
         // Checked after the new mission started, so the M3 numbers come from
         // the snapshot taken when the mission part began.
         done = true;
+        // The next mission (checked once its pods have landed) still has
+        // player 2 in it, as a person.
+        const player_t *q = &sim->players[1];
+        p2_next_mission = q->active && !q->bot && (sim->humans & 2);
         bool m3 = m3_kills >= 5 && shots_seen > 50 && shotgun_seen && m3_wave >= 1 && throws >= 5 && mg_seen &&
                   turret_shots > 0 && bombs >= AIRSTRIKE_BOMBS && shells >= BARRAGE_SHELLS / 2 && pickups >= 2 &&
                   p1_reinforced && bot_reinforced && m3_reinforcements == REINFORCE_POOL - 2;
         bool m4 = zones_captured == MISSION_ZONES && hold_seen && success_seen && extracted >= 1 && new_mission &&
                   !mission_over(sim);
+        bool m5 = scheme_switched && p2_pod && p2_shots > 0 && p4_took_over && p4_left && p2_next_mission;
         debugf("AUTOTEST %s: kills %lu, shots %lu, shotgun %d, wave %u, throws %lu, mg %d, turret shots %lu, "
                "bombs %lu, shells %lu, pickups %lu, reinforced p1 %d bot %d, reinforcements %u | mission: "
-               "zones %lu, hold %d, success %d, extracted %lu, results at frame %lu, new mission %d, "
+               "zones %lu, hold %d, success %d, extracted %lu, results at frame %lu, new mission %d | players: "
+               "scheme switch %d, p2 pod %d, p2 shots %lu, p4 takeover %d, p4 left %d, p2 next mission %d, "
                "dropped ticks see STATS\n",
-               m3 && m4 ? "PASS" : "FAIL", (unsigned long)m3_kills, (unsigned long)shots_seen, shotgun_seen,
+               m3 && m4 && m5 ? "PASS" : "FAIL", (unsigned long)m3_kills, (unsigned long)shots_seen, shotgun_seen,
                m3_wave, (unsigned long)throws, mg_seen, (unsigned long)turret_shots, (unsigned long)bombs,
                (unsigned long)shells, (unsigned long)pickups, p1_reinforced, bot_reinforced, m3_reinforcements,
                (unsigned long)zones_captured, hold_seen, success_seen, (unsigned long)extracted,
-               (unsigned long)results_frame, new_mission);
+               (unsigned long)results_frame, new_mission, scheme_switched, p2_pod, (unsigned long)p2_shots,
+               p4_took_over, p4_left, p2_next_mission);
     }
-    in->pressed_any |= p->pressed;
+    in->pressed_any |= p->pressed | p2->pressed | p4->pressed;
 }
 
 void autotest_observe(const sim_t *sim)

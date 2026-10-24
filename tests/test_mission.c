@@ -281,8 +281,10 @@ void test_mission_stats(void)
     in[0].held = 0;
     step_n(&s, in, 10);
     const mission_stats_t *st = &s.mission.stats;
-    CHECK(st->shots >= 1);
-    CHECK(st->hits >= 1);
+    const player_stats_t *p1 = &st->players[0], *p2 = &st->players[1];
+    CHECK(p1->shots >= 1);
+    CHECK(p1->hits >= 1);
+    CHECK_EQ_INT(p1->kills, 1);
     CHECK_EQ_INT(st->kills[ENEMY_SKITTER], 1);
     CHECK(st->ticks >= 22);
 
@@ -292,12 +294,56 @@ void test_mission_stats(void)
     in[0].held = SIM_BTN_Z;
     step_n(&s, in, 5);
     in[0].held = 0;
-    CHECK(st->friendly_hits >= 1);
+    CHECK(p1->friendly_hits >= 1);
+    CHECK_EQ_INT(p2->friendly_hits, 0);
 
     sim_kill_player(&s, 1);
-    CHECK_EQ_INT(st->deaths, 1);
+    CHECK_EQ_INT(p2->deaths, 1);
+    CHECK_EQ_INT(p1->deaths, 0);
     enter_code(&s, in, 0, CALLDOWN_REINFORCE);
     step_n(&s, in, BEACON_FLIGHT_TICKS + calldown_defs[CALLDOWN_REINFORCE].delay + 2);
-    CHECK_EQ_INT(st->calldowns, 1);
+    CHECK_EQ_INT(p1->calldowns, 1);
     CHECK_EQ_INT(st->reinforcements, 1);
+
+    player_stats_t sum = mission_squad_stats(st);
+    CHECK_EQ_INT(sum.kills, 1);
+    CHECK_EQ_INT(sum.deaths, 1);
+    CHECK_EQ_INT(sum.calldowns, 1);
+    CHECK_EQ_INT((int)sum.shots, (int)p1->shots);
+}
+
+// Kills go to whoever dealt the killing blow: bullets, a sentry's bullets
+// (to the player who called it in), explosions; the emergency pod's are
+// nobody's.
+void test_kill_credit(void)
+{
+    sim_t s;
+    setup_empty(&s);
+    const mission_stats_t *st = &s.mission.stats;
+    int e = sim_spawn_enemy(&s, ENEMY_SKITTER, v2(5.0f, 5.0f));
+    refresh_world(&s);
+    sim_explode(&s, v2(5.0f, 5.0f), 2.0f, 500.0f, BLAST_BOMB, 2);
+    CHECK(!s.enemies[e].active);
+    CHECK_EQ_INT(st->players[2].kills, 1);
+
+    e = sim_spawn_enemy(&s, ENEMY_SKITTER, v2(-5.0f, 5.0f));
+    refresh_world(&s);
+    sim_explode(&s, v2(-5.0f, 5.0f), 2.0f, 500.0f, BLAST_IMPACT, SOURCE_NONE);
+    CHECK(!s.enemies[e].active);
+    CHECK_EQ_INT(st->kills[ENEMY_SKITTER], 2);
+    CHECK_EQ_INT(mission_squad_stats(st).kills, 1);
+
+    // Player 4's sentry, shooting a bug in front of it.
+    s.turrets[1] = (turret_t){ .active = true, .owner = 3, .ammo = 50, .life = 1000, .target = -1,
+                              .pos = v2(0.0f, -8.0f), .facing = v2(0.0f, 1.0f) };
+    e = sim_spawn_enemy(&s, ENEMY_SKITTER, v2(0.0f, -4.0f));
+    s.enemies[e].state = ESTATE_RECOVER;
+    s.enemies[e].timer = 1000;
+    sim_input_t in[SIM_MAX_PLAYERS];
+    inputs_none(in);
+    for (int i = 0; i < SIM_HZ * 3 && s.enemies[e].active; i++)
+        sim_step(&s, in);
+    CHECK(!s.enemies[e].active);
+    CHECK_EQ_INT(st->players[3].kills, 1);
+    CHECK_EQ_INT(st->players[3].hits, 0); // hits count a player's own bullets
 }

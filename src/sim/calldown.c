@@ -111,7 +111,7 @@ static bool throw_beacon(sim_t *s, int idx, calldown_type_t type)
     };
     if (!s->settings.free_calldowns)
         s->cooldowns[idx][type] = calldown_defs[type].cooldown;
-    s->mission.stats.calldowns++;
+    s->mission.stats.players[idx].calldowns++;
     sim_push_event(s, EV_BEACON_THROWN, (uint8_t)type, p->pos, p->facing);
     return true;
 }
@@ -161,7 +161,7 @@ static float falloff(float dist, float radius)
     return 1.0f - (1.0f - EXPLOSION_EDGE) * x;
 }
 
-void sim_explode(sim_t *s, vec2 pos, float radius, float damage, blast_kind_t kind)
+void sim_explode(sim_t *s, vec2 pos, float radius, float damage, blast_kind_t kind, int by)
 {
     sim_push_event(s, EV_EXPLOSION, (uint8_t)kind, pos, v2(0.0f, 0.0f));
 
@@ -175,7 +175,7 @@ void sim_explode(sim_t *s, vec2 pos, float radius, float damage, blast_kind_t ki
             continue;
         float d = v2_len(v2_sub(e->pos, pos)) - enemy_defs[e->type].radius;
         if (d < radius) // a zero shot direction never counts as the armored front
-            enemy_damage(s, ei, damage * falloff(d, radius), e->pos, v2(0.0f, 0.0f));
+            enemy_damage(s, ei, damage * falloff(d, radius), e->pos, v2(0.0f, 0.0f), by);
     }
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const player_t *p = &s->players[i];
@@ -247,15 +247,15 @@ static void arrive(sim_t *s, const beacon_t *b)
     sim_push_event(s, EV_CALLDOWN, b->type, b->pos, b->dir);
     switch (b->type) {
     case CALLDOWN_REINFORCE:
-        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
+        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, b->owner);
         reinforce_at(s, b->pos);
         break;
     case CALLDOWN_RESUPPLY:
-        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
+        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, b->owner);
         add_pickup(s, PICKUP_RESUPPLY, RESUPPLY_USES, RESUPPLY_LIFE, b->pos);
         break;
     case CALLDOWN_MACHINE_GUN:
-        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
+        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, b->owner);
         add_pickup(s, PICKUP_MACHINE_GUN, 1, MG_PICKUP_LIFE, b->pos);
         break;
     case CALLDOWN_AIRSTRIKE:
@@ -263,7 +263,7 @@ static void arrive(sim_t *s, const beacon_t *b)
         add_strike(s, b);
         break;
     case CALLDOWN_SENTRY:
-        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
+        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, b->owner);
         add_turret(s, b);
         break;
     case CALLDOWN_EXTRACTION:
@@ -306,7 +306,7 @@ static void update_strike(sim_t *s, strike_t *k)
         return;
     if (k->type == CALLDOWN_AIRSTRIKE) {
         float along = ((float)k->done - (AIRSTRIKE_BOMBS - 1) * 0.5f) * AIRSTRIKE_SPACING;
-        sim_explode(s, v2_add(k->center, v2_scale(k->dir, along)), AIRSTRIKE_RADIUS, AIRSTRIKE_DAMAGE, BLAST_BOMB);
+        sim_explode(s, v2_add(k->center, v2_scale(k->dir, along)), AIRSTRIKE_RADIUS, AIRSTRIKE_DAMAGE, BLAST_BOMB, k->owner);
         k->timer = AIRSTRIKE_INTERVAL;
         k->active = ++k->done < AIRSTRIKE_BOMBS;
     } else {
@@ -314,7 +314,7 @@ static void update_strike(sim_t *s, strike_t *k)
         float ang = rng_float(&s->rng) * 6.2831853f;
         float r = sqrtf(rng_float(&s->rng)) * BARRAGE_AREA;
         vec2 at = v2_add(k->center, v2(cosf(ang) * r, sinf(ang) * r));
-        sim_explode(s, at, BARRAGE_RADIUS, BARRAGE_DAMAGE, BLAST_SHELL);
+        sim_explode(s, at, BARRAGE_RADIUS, BARRAGE_DAMAGE, BLAST_SHELL, k->owner);
         k->timer = BARRAGE_INTERVAL;
         k->active = ++k->done < BARRAGE_SHELLS;
     }
@@ -438,13 +438,15 @@ static void update_squad(sim_t *s)
         if (!all_down) { // a Reinforce thrown before the last death landed first
             s->squad = SQUAD_FIGHTING;
         } else if (--s->squad_timer == 0) {
-            sim_explode(s, s->camera.target, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
+            sim_explode(s, s->camera.target, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, SOURCE_NONE);
             reinforce_at(s, s->camera.target);
             s->squad = SQUAD_FIGHTING;
         }
         break;
     case SQUAD_LOST:
-        if (s->squad_timer) // the N64 layer restarts the mission at 0
+        if (!all_down) // someone joined and dropped in
+            s->squad = SQUAD_FIGHTING;
+        else if (s->squad_timer) // the mission fails at 0
             s->squad_timer--;
         break;
     }

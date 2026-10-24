@@ -21,8 +21,9 @@ static inline void sim_mark(sim_t *s, sim_phase_t phase)
 int sim_spawn_projectile(sim_t *s, uint8_t owner, uint8_t weapon, vec2 pos, vec2 dir,
                          float speed, float range, float damage);
 
-// Damage entry points (also used by the tests).
+// Damage entry points (also used by the tests). `by` gets the kill credit:
+// a player index or SOURCE_NONE.
 void player_damage(sim_t *s, int idx, float amount);
-void enemy_damage(sim_t *s, int idx, float amount, vec2 hit_pos, vec2 shot_dir);
+void enemy_damage(sim_t *s, int idx, float amount, vec2 hit_pos, vec2 shot_dir, int by);
 
 #endif

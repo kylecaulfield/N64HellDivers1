@@ -75,7 +75,8 @@ static void fire(sim_t *s, int idx, vec2 aim)
     weapon_slot_t *w = &p->weapons[p->weapon];
     const weapon_def_t *def = &weapon_defs[w->type];
 
-    vec2 dir = aim_assist(s, p->pos, aim, (control_scheme_t)s->settings.scheme[idx]);
+    control_scheme_t scheme = p->bot ? SCHEME_B : (control_scheme_t)s->settings.scheme[idx];
+    vec2 dir = aim_assist(s, p->pos, aim, scheme);
     vec2 muzzle = v2_add(p->pos, v2_scale(dir, MUZZLE_OFFSET));
 
     for (int n = 0; n < def->pellets; n++) {
@@ -85,7 +86,7 @@ static void fire(sim_t *s, int idx, vec2 aim)
                              def->speed, def->range, def->damage);
     }
     sim_push_event(s, EV_SHOT, w->type, muzzle, dir);
-    s->mission.stats.shots++;
+    s->mission.stats.players[idx].shots++;
 
     if (!s->settings.infinite_ammo)
         w->mag--;

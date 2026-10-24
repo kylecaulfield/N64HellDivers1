@@ -37,6 +37,21 @@ int mission_hold_ticks(const sim_t *s)
     return s->settings.quick_mission ? EXTRACT_HOLD_TICKS / QUICK_MISSION_DIV : EXTRACT_HOLD_TICKS;
 }
 
+player_stats_t mission_squad_stats(const mission_stats_t *st)
+{
+    player_stats_t sum = {0};
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_stats_t *p = &st->players[i];
+        sum.kills += p->kills;
+        sum.deaths += p->deaths;
+        sum.shots += p->shots;
+        sum.hits += p->hits;
+        sum.friendly_hits += p->friendly_hits;
+        sum.calldowns += p->calldowns;
+    }
+    return sum;
+}
+
 static bool in_circle(vec2 p, vec2 c, float r)
 {
     return v2_dist2(p, c) <= r * r;

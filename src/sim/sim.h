@@ -151,6 +151,10 @@ typedef struct {
 // Projectile owners: players 0-3, or a sentry turret.
 #define OWNER_TURRET 0x80   // | turret index
 
+// Who dealt damage, for kill credit: a player index, or nobody (the
+// emergency reinforce's pod). A sentry's kills go to whoever called it in.
+#define SOURCE_NONE 0xFF
+
 typedef struct {
     bool     present;        // a controller is plugged into this port
     bool     active;         // spawned into the mission
@@ -310,15 +314,21 @@ typedef struct {
     uint8_t  bugs_in;
 } zone_state_t;
 
+// Per port, for the results screen.
 typedef struct {
-    uint32_t ticks;                    // mission time
-    uint16_t kills[ENEMY_TYPE_COUNT];
-    uint32_t shots;                    // player trigger pulls (a shotgun blast is one)
-    uint32_t hits;                     // player bullets that hit a bug
-    uint16_t friendly_hits;            // player bullets that hit a teammate
+    uint16_t kills;          // killing blows, including their sentries' and strikes'
     uint16_t deaths;
-    uint16_t reinforcements;           // used
-    uint16_t calldowns;                // beacons thrown
+    uint32_t shots;          // trigger pulls (a shotgun blast is one)
+    uint32_t hits;           // their bullets that hit a bug
+    uint16_t friendly_hits;  // their bullets that hit a teammate
+    uint16_t calldowns;      // beacons thrown
+} player_stats_t;
+
+typedef struct {
+    uint32_t       ticks;                      // mission time
+    uint16_t       kills[ENEMY_TYPE_COUNT];    // by bug type, whoever killed them
+    uint16_t       reinforcements;             // used
+    player_stats_t players[SIM_MAX_PLAYERS];
 } mission_stats_t;
 
 typedef struct {
@@ -385,6 +395,7 @@ typedef struct {
     bool     force_max_zoom;          // stress testing: camera fully zoomed out
     bool     free_calldowns;          // debug: no cooldowns
     bool     quick_mission;           // debug: capture and hold times divided by QUICK_MISSION_DIV
+    bool     bots;                    // debug: bots play the ports nobody has joined
     uint16_t enemy_cap;               // <= SIM_MAX_ENEMIES
     uint16_t flow_budget;             // flow-field cells expanded per tick
 } sim_settings_t;
@@ -433,6 +444,7 @@ typedef struct {
     turret_t       turrets[SIM_MAX_TURRETS];
     pickup_t       pickups[SIM_MAX_PICKUPS];
     uint16_t       cooldowns[SIM_MAX_PLAYERS][CALLDOWN_COUNT]; // kept through death
+    uint8_t        humans;            // bit per port a person is playing (port 1 always)
     uint8_t        reinforcements;    // shared pool
     uint8_t        squad;             // squad_state_t
     uint16_t       squad_timer;       // SQUAD_DOWN / SQUAD_LOST countdown
@@ -446,8 +458,10 @@ typedef struct {
     void          *mark_ctx;
 } sim_t;
 
+// Player 1 starts in; the others join (see sim_player_join).
 void sim_init(sim_t *s, uint32_t seed);
-// A new mission with the same settings (and bots) as the current one.
+// A new mission with the same settings, players and bots as the current
+// one. Everyone rides a pod down.
 void sim_restart(sim_t *s, uint32_t seed);
 void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS]);
 
@@ -466,8 +480,18 @@ void sim_kill_all_enemies(sim_t *s);
 void sim_refill_ammo(sim_t *s, int port);
 // Kills a player even in god mode (to test reinforcing).
 void sim_kill_player(sim_t *s, int port);
-// Bots take ports 2-4 (stress testing until real players join in M5).
+// Bots take the ports 2-4 that nobody has joined.
 void sim_set_bots(sim_t *s, bool on);
+
+// A person starts playing on `port`. A bot there hands over its trooper as
+// it stands (even dead); an empty port drops a new trooper in by pod near
+// the squad, free of the reinforcement pool. Once the dropship is down, or
+// the mission is over, they start with the next mission instead. Returns
+// whether their trooper is on the field now.
+bool sim_player_join(sim_t *s, int port);
+// The person on `port` stops playing: a bot carries on with the trooper if
+// bots are on, otherwise it leaves the field. Player 1 never leaves.
+void sim_player_leave(sim_t *s, int port);
 
 // Internal, exposed for the unit tests.
 void sim_push_event(sim_t *s, sim_event_type_t type, uint8_t a, vec2 pos, vec2 dir);

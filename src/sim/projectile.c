@@ -78,13 +78,17 @@ static void update_one(sim_t *s, projectile_t *pr)
 
     if (best_t <= 1.0f) {
         vec2 at = v2_add(p0, v2_scale(step, best_t));
+        // A sentry's bullets count as whoever called the sentry in.
         bool by_player = pr->owner < SIM_MAX_PLAYERS;
+        int by = by_player ? pr->owner : s->turrets[pr->owner & ~OWNER_TURRET].owner;
         if (hit_player >= 0) {
-            s->mission.stats.friendly_hits += by_player;
+            if (by_player)
+                s->mission.stats.players[by].friendly_hits++;
             player_damage(s, hit_player, pr->damage);
         } else if (hit_enemy >= 0) {
-            s->mission.stats.hits += by_player;
-            enemy_damage(s, hit_enemy, pr->damage, at, v2_norm_or(step, v2(0.0f, 1.0f)));
+            if (by_player)
+                s->mission.stats.players[by].hits++;
+            enemy_damage(s, hit_enemy, pr->damage, at, v2_norm_or(step, v2(0.0f, 1.0f)), by);
         }
         else if (hit_world)
             sim_push_event(s, EV_HIT_WORLD, 0, at, v2_norm_or(step, v2(0.0f, 1.0f)));

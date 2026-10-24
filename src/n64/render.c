@@ -3,6 +3,7 @@
 #include "fx.h"
 #include "gpu_timing.h"
 #include "mission.h"
+#include "palette.h"
 
 #include <libdragon.h>
 #include <stdio.h>
@@ -81,6 +82,15 @@ static rspq_block_t *blocks[MDL_COUNT];
 // Per bug type: the material, when `blocks` holds geometry only. NULL for a
 // model with several materials, whose block then carries them all.
 static rspq_block_t *bug_material[ENEMY_TYPE_COUNT];
+// The soldier's material with the player-colour combiner, when `blocks`
+// holds its geometry only (a single-material model); NULL otherwise, and
+// the soldier is drawn untinted.
+static rspq_block_t *soldier_material;
+
+// Vertex alpha 0 marks the parts that take the player's colour (prim):
+// cycle 1 picks white or prim by shade alpha, cycle 2 lights it.
+#define TINT_COMBINER RDPQ_COMBINER2((ENV, PRIM, SHADE_ALPHA, PRIM), (0, 0, 0, 1), \
+                                     (COMBINED, 0, SHADE, 0), (0, 0, 0, 1))
 static T3DViewport viewport;
 static int frame_idx;
 
@@ -119,19 +129,28 @@ void render_init(void)
         snprintf(path, sizeof(path), "rom:/models/%s.t3dm", model_names[i]);
         models[i] = t3d_model_load(path);
         bool skinned = i <= MDL_BULWARK;
-        bool bug = i >= MDL_SKITTER && skinned;
         int objects = 0;
         T3DModelIter it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
         while (t3d_model_iter_next(&it))
             objects++;
-        if (bug && objects == 1) {
+        if (skinned && objects == 1) {
             T3DModelState state = t3d_model_state_create();
             rspq_block_begin();
             it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
-            while (t3d_model_iter_next(&it))
-                if (it.object->material)
-                    t3d_model_draw_material(it.object->material, &state);
-            bug_material[i - MDL_SKITTER] = rspq_block_end();
+            while (t3d_model_iter_next(&it)) {
+                T3DMaterial *mat = it.object->material;
+                if (!mat)
+                    continue;
+                if (i == MDL_SOLDIER)
+                    mat->colorCombiner = TINT_COMBINER;
+                t3d_model_draw_material(mat, &state);
+            }
+            if (i == MDL_SOLDIER) {
+                rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
+                soldier_material = rspq_block_end();
+            } else {
+                bug_material[i - MDL_SKITTER] = rspq_block_end();
+            }
             // Buffered skeletons draw through the skeleton segment, so one
             // recorded block serves every pose slot.
             rspq_block_begin();
@@ -361,15 +380,19 @@ static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec
         pb_add(&pb, tail.x, 1.0f, -tail.y, shotgun ? 10 : 14, 255, 170, 60);
     }
 
-    // Aim marker: three dots ahead of each living player (grey while reloading).
+    // Aim marker: three dots ahead of each living player, in their colour
+    // (grey while reloading).
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const player_t *p = &sim->players[i];
         if (!sim_player_alive(p) || p->state != PSTATE_NORMAL)
             continue;
-        uint8_t v = p->reload_timer ? 120 : 255;
+        const uint8_t *c = PLAYER_RGB[i];
+        static const uint8_t grey[3] = { 120, 120, 120 };
+        if (p->reload_timer)
+            c = grey;
         for (int d = 0; d < 3; d++) {
             vec2 at = v2_add(p->pos, v2_scale(p->facing, 1.6f + 0.8f * d));
-            pb_add(&pb, at.x, 0.15f, -at.y, 12, v, v, v);
+            pb_add(&pb, at.x, 0.15f, -at.y, 12, c[0], c[1], c[2]);
         }
     }
 
@@ -582,7 +605,11 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
         t3d_matrix_set(&static_mats[1 + i], true);
         rspq_block_run(blocks[MDL_ROCK_A + o->kind]);
     }
+    if (first_bug && soldier_material)
+        rspq_block_run(soldier_material);
     for (int i = 0; i < first_bug; i++) {
+        const uint8_t *c = PLAYER_RGB[player_idx[i]];
+        rdpq_set_prim_color(RGBA32(c[0], c[1], c[2], 0xFF));
         t3d_skeleton_use(&soldier_pose[player_idx[i]].skel);
         t3d_matrix_set(&dyn[i], true);
         rspq_block_run(blocks[MDL_SOLDIER]);

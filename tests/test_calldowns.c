@@ -472,7 +472,7 @@ void test_explosion_damage_falls_off_and_ignores_armor(void)
     int far = sim_spawn_enemy(&s, ENEMY_BULWARK, v2(10.0f + BULWARK_RADIUS + 2.0f, 0.0f));
     s.enemies[near].facing = s.enemies[far].facing = v2(-1.0f, 0.0f); // fronts towards the blast
     refresh_world(&s);
-    sim_explode(&s, v2(10.0f, 0.0f), 2.5f, 100.0f, BLAST_SHELL);
+    sim_explode(&s, v2(10.0f, 0.0f), 2.5f, 100.0f, BLAST_SHELL, SOURCE_NONE);
     float near_loss = BULWARK_HP - s.enemies[near].hp;
     float far_loss = BULWARK_HP - s.enemies[far].hp;
     CHECK_NEAR(near_loss, 100.0f, 1e-3);           // full damage, no armor reduction
@@ -485,11 +485,11 @@ void test_explosions_hurt_players(void)
 {
     sim_t s;
     setup_empty(&s);
-    sim_explode(&s, v2(1.0f, 0.0f), 2.0f, 40.0f, BLAST_BOMB);
+    sim_explode(&s, v2(1.0f, 0.0f), 2.0f, 40.0f, BLAST_BOMB, SOURCE_NONE);
     CHECK(s.players[0].hp < PLAYER_HP);
     s.settings.god_mode = true;
     float hp = s.players[0].hp;
-    sim_explode(&s, v2(1.0f, 0.0f), 2.0f, 40.0f, BLAST_BOMB);
+    sim_explode(&s, v2(1.0f, 0.0f), 2.0f, 40.0f, BLAST_BOMB, SOURCE_NONE);
     CHECK_NEAR(s.players[0].hp, hp, 1e-6);
 }
 

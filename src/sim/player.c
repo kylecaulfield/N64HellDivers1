@@ -62,7 +62,7 @@ void player_damage(sim_t *s, int idx, float amount)
         p->reload_timer = 0;
         p->vel = v2(0.0f, 0.0f);
         p->code = (code_entry_t){0};
-        s->mission.stats.deaths++;
+        s->mission.stats.players[idx].deaths++;
         sim_push_event(s, EV_PLAYER_DIED, (uint8_t)idx, p->pos, p->facing);
     }
 }
@@ -82,7 +82,7 @@ static void update_one(sim_t *s, int idx, const player_intent_t *in)
     case PSTATE_DROPPING:
         // The pod lands on whatever is below (the rider is still immune).
         if (--p->state_timer == 0) {
-            sim_explode(s, p->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
+            sim_explode(s, p->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, idx);
             p->state = PSTATE_NORMAL;
         }
         return;

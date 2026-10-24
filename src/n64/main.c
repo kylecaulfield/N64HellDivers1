@@ -27,6 +27,7 @@
 #define VBLANKS_PER_TICK    2
 #define MAX_TICKS_PER_FRAME 2
 #define HEAP_BASELINE_FRAME 60 // let lazy allocations (e.g. the Z-buffer) settle first
+#define LEAVE_FRAMES        30 // a controller unplugged this long takes its player out
 
 static volatile uint32_t vblank_count;
 static sim_t sim;
@@ -51,6 +52,22 @@ static void wait_vblank(void)
 {
     uint32_t v = vblank_count;
     while (vblank_count == v) {}
+}
+
+// A player whose controller has been unplugged for LEAVE_FRAMES leaves
+// (player 1 never does): a bot takes over if bots are on.
+static void update_leavers(uint8_t connected)
+{
+    static uint8_t gone[SIM_MAX_PLAYERS]; // frames without a controller
+    for (int p = 1; p < SIM_MAX_PLAYERS; p++) {
+        bool playing = sim.humans & (1u << p);
+        if (!playing || (connected & (1u << p))) {
+            gone[p] = 0;
+        } else if (++gone[p] == LEAVE_FRAMES) {
+            sim_player_leave(&sim, p);
+            debugf("P%d left (controller unplugged)\n", p + 1);
+        }
+    }
 }
 
 // sim_step calls this at the start of each phase (and once at the end).
@@ -112,8 +129,13 @@ int main(void)
 #ifdef AUTOTEST
         autotest_input(&input, frames, &sim);
 #endif
+        uint8_t connected = 0;
+        for (int p = 0; p < SIM_MAX_PLAYERS; p++)
+            connected |= (uint8_t)(input.ports[p].connected << p);
+        update_leavers(connected);
+
         // Once the mission is over the results screen is up; START there
-        // starts a new mission with the same settings.
+        // starts a new mission with the same settings and players.
         bool over = mission_over(&sim);
         if (input.toggle_overlay)
             overlay_toggle();
@@ -121,8 +143,23 @@ int main(void)
             menu_toggle();
         } else if (menu_is_open()) {
             menu_update(input.pressed_any, &sim);
-        } else if (input.pressed_any & SIM_BTN_START) {
-            if (over) {
+        } else {
+            // START on a controller nobody is playing joins in; from someone
+            // playing it pauses, or on the results screen starts the next
+            // mission (joining there counts too).
+            bool start = false;
+            for (int p = 0; p < SIM_MAX_PLAYERS; p++) {
+                if (!(input.ports[p].pressed & SIM_BTN_START))
+                    continue;
+                if (!(sim.humans & (1u << p))) {
+                    bool now = sim_player_join(&sim, p);
+                    debugf("P%d joined%s\n", p + 1, now ? "" : " for the next mission");
+                    if (!over)
+                        continue;
+                }
+                start = true;
+            }
+            if (start && over) {
                 sim_restart(&sim, sim.rng.state ^ frames);
                 render_bind_world(&sim);
                 fx_init();
@@ -131,8 +168,16 @@ int main(void)
                 // loading, not dropped gameplay ticks.
                 tickclock_init(&clock, VBLANKS_PER_TICK, MAX_TICKS_PER_FRAME, vblank_count);
                 debugf("new mission\n");
-            } else {
+            } else if (start) {
                 paused = !paused;
+            }
+            // On the pause screen, A switches that player's control scheme.
+            for (int p = 0; paused && p < SIM_MAX_PLAYERS; p++) {
+                if (!(sim.humans & (1u << p)) || !(input.ports[p].pressed & SIM_BTN_A))
+                    continue;
+                uint8_t *scheme = &sim.settings.scheme[p];
+                *scheme = (uint8_t)((*scheme + 1) % SCHEME_COUNT);
+                debugf("P%d control scheme %c\n", p + 1, *scheme == SCHEME_A ? 'A' : 'B');
             }
         }
 
@@ -163,7 +208,7 @@ int main(void)
 
         uint32_t wait_us = render_scene(&sim, (float)run * SIM_DT);
         uint64_t t_hud = get_ticks();
-        hud_draw(&sim, paused && !menu_is_open());
+        hud_draw(&sim, paused && !menu_is_open(), connected);
         if (was_over)
             results_draw(&sim);
         menu_draw(&sim);

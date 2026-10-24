@@ -8,7 +8,6 @@
 #define FONT FONT_BUILTIN_DEBUG_MONO
 
 enum {
-    ITEM_SCHEME,
     ITEM_WAVES,
     ITEM_SPAWN,
     ITEM_BOTS,
@@ -66,10 +65,6 @@ static void activate(sim_t *sim, int item, int dir)
 {
     sim_settings_t *st = &sim->settings;
     switch (item) {
-    case ITEM_SCHEME:
-        st->scheme[0] = (uint8_t)((st->scheme[0] + 1) % SCHEME_COUNT);
-        debugf("P1 control scheme %c\n", st->scheme[0] == SCHEME_A ? 'A' : 'B');
-        break;
     case ITEM_WAVES:
         st->waves = !st->waves;
         break;
@@ -79,11 +74,9 @@ static void activate(sim_t *sim, int item, int dir)
         else
             sim_spawn_mix(sim, SPAWN_SIZES[spawn_size], sim->camera.target, SPAWN_RING_MIN, SPAWN_RING_MAX);
         break;
-    case ITEM_BOTS: {
-        bool on = !sim->players[1].bot;
-        sim_set_bots(sim, on);
+    case ITEM_BOTS:
+        sim_set_bots(sim, !st->bots);
         break;
-    }
     case ITEM_ZOOM:
         st->force_max_zoom = !st->force_max_zoom;
         break;
@@ -174,7 +167,7 @@ void menu_draw(const sim_t *sim)
     if (!open)
         return;
     const sim_settings_t *st = &sim->settings;
-    const int x = 56, y0 = 24, lh = 11; // 18 items + title fit in 240 lines
+    const int x = 56, y0 = 24, lh = 11; // 17 items + title fit in 240 lines
 
     rdpq_set_mode_fill(RGBA32(10, 12, 18, 0xFF));
     rdpq_fill_rectangle(x - 10, y0 - 22, x + 218, y0 + (ITEM_COUNT + 1) * lh + 4);
@@ -184,10 +177,9 @@ void menu_draw(const sim_t *sim)
         int y = y0 + (i + 1) * lh;
         const char *m = i == cursor ? ">" : " ";
         switch (i) {
-        case ITEM_SCHEME:   rdpq_text_printf(NULL, FONT, x, y, "%s P1 controls: %s", m, st->scheme[0] == SCHEME_B ? "B" : "A"); break;
         case ITEM_WAVES:    rdpq_text_printf(NULL, FONT, x, y, "%s Waves: %s", m, on_off(st->waves)); break;
         case ITEM_SPAWN:    rdpq_text_printf(NULL, FONT, x, y, "%s Spawn %u mixed bugs <>", m, SPAWN_SIZES[spawn_size]); break;
-        case ITEM_BOTS:     rdpq_text_printf(NULL, FONT, x, y, "%s Bots P2-P4: %s", m, on_off(sim->players[1].bot)); break;
+        case ITEM_BOTS:     rdpq_text_printf(NULL, FONT, x, y, "%s Bots on free ports: %s", m, on_off(st->bots)); break;
         case ITEM_ZOOM:     rdpq_text_printf(NULL, FONT, x, y, "%s Force max zoom: %s", m, on_off(st->force_max_zoom)); break;
         case ITEM_GOD:      rdpq_text_printf(NULL, FONT, x, y, "%s God mode: %s", m, on_off(st->god_mode)); break;
         case ITEM_INF_AMMO: rdpq_text_printf(NULL, FONT, x, y, "%s Infinite ammo: %s", m, on_off(st->infinite_ammo)); break;

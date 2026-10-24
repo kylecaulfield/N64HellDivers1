@@ -41,19 +41,19 @@ void test_bulwark_front_armor(void)
     s.enemies[e].facing = v2(0.0f, -1.0f); // facing south, towards the shooter
 
     // From the front (shot travelling north, into its face): reduced.
-    enemy_damage(&s, e, 100.0f, v2(0.0f, 9.0f), v2(0.0f, 1.0f));
+    enemy_damage(&s, e, 100.0f, v2(0.0f, 9.0f), v2(0.0f, 1.0f), SOURCE_NONE);
     CHECK_NEAR(s.enemies[e].hp, BULWARK_HP - 100.0f * BULWARK_FRONT_ARMOR, 1e-3);
     CHECK(s.events[s.event_count - 1].a & EV_HIT_ARMORED);
 
     // From behind (shot travelling south): full damage.
     float hp = s.enemies[e].hp;
-    enemy_damage(&s, e, 100.0f, v2(0.0f, 11.0f), v2(0.0f, -1.0f));
+    enemy_damage(&s, e, 100.0f, v2(0.0f, 11.0f), v2(0.0f, -1.0f), SOURCE_NONE);
     CHECK_NEAR(s.enemies[e].hp, hp - 100.0f, 1e-3);
     CHECK(!(s.events[s.event_count - 1].a & EV_HIT_ARMORED));
 
     // From the side: full damage.
     hp = s.enemies[e].hp;
-    enemy_damage(&s, e, 50.0f, v2(-1.0f, 10.0f), v2(1.0f, 0.0f));
+    enemy_damage(&s, e, 50.0f, v2(-1.0f, 10.0f), v2(1.0f, 0.0f), SOURCE_NONE);
     CHECK_NEAR(s.enemies[e].hp, hp - 50.0f, 1e-3);
 }
 
@@ -63,7 +63,7 @@ void test_gnasher_has_no_armor(void)
     setup_empty(&s);
     int e = sim_spawn_enemy(&s, ENEMY_GNASHER, v2(0.0f, 10.0f));
     s.enemies[e].facing = v2(0.0f, -1.0f);
-    enemy_damage(&s, e, 20.0f, v2(0.0f, 9.0f), v2(0.0f, 1.0f));
+    enemy_damage(&s, e, 20.0f, v2(0.0f, 9.0f), v2(0.0f, 1.0f), SOURCE_NONE);
     CHECK_NEAR(s.enemies[e].hp, GNASHER_HP - 20.0f, 1e-4);
 }
 

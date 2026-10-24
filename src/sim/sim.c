@@ -13,38 +13,114 @@
 #include "sim_internal.h"
 #include "waves.h"
 
-void sim_init(sim_t *s, uint32_t seed)
+// Where each port's pod lands at the start of a mission.
+static const vec2 DROP_SLOT[SIM_MAX_PLAYERS] = {
+    { 0.0f, 0.0f }, { -2.5f, -1.5f }, { 2.5f, -1.5f }, { 0.0f, -3.0f },
+};
+
+// A fresh arena and mission. Everyone playing, and bots on the other ports
+// if they are on, rides a pod down.
+static void start(sim_t *s, uint32_t seed, uint8_t humans)
 {
-    memset(s, 0, sizeof(*s));
     rng_seed(&s->rng, seed);
-    s->settings.enemy_cap = SIM_ENEMY_CAP_DEFAULT;
-    s->settings.flow_budget = FLOW_BUDGET_DEFAULT;
-    s->settings.waves = true;
+    s->humans = humans | 1u;
     s->reinforcements = REINFORCE_POOL;
     s->squad = SQUAD_FIGHTING;
     arena_generate(&s->arena, &s->rng);
     flow_init(&s->flow, &s->arena);
     waves_reset(s);
-    // Player 1 drops in at the start; joining arrives in M5.
-    sim_spawn_player(s, 0, v2(0.0f, 0.0f));
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        bool human = s->humans & (1u << i);
+        if (!human && !s->settings.bots)
+            continue;
+        s->players[i].bot = !human;
+        sim_spawn_player(s, i, DROP_SLOT[i]);
+    }
     mission_init(s);
     camera_reset(s);
     sim_update_counts(s);
     grid_build(s);
 }
 
+void sim_init(sim_t *s, uint32_t seed)
+{
+    memset(s, 0, sizeof(*s));
+    s->settings.enemy_cap = SIM_ENEMY_CAP_DEFAULT;
+    s->settings.flow_budget = FLOW_BUDGET_DEFAULT;
+    s->settings.waves = true;
+    start(s, seed, 1u);
+}
+
 void sim_restart(sim_t *s, uint32_t seed)
 {
     sim_settings_t settings = s->settings;
-    bool bots = s->players[1].bot;
+    uint8_t humans = s->humans;
     sim_mark_fn mark = s->mark;
     void *mark_ctx = s->mark_ctx;
-    sim_init(s, seed);
+    memset(s, 0, sizeof(*s));
     s->settings = settings;
     s->mark = mark;
     s->mark_ctx = mark_ctx;
-    if (bots)
-        sim_set_bots(s, true);
+    start(s, seed, humans);
+}
+
+// A spot near the squad for a pod: inside the arena, clear of rocks, and
+// clear of every trooper (a landing pod crushes teammates too), including
+// pods still coming down.
+static vec2 drop_spot(const sim_t *s)
+{
+    static const vec2 AROUND[] = {
+        { 0.0f, -2.5f }, { 2.5f, -1.5f }, { -2.5f, -1.5f }, { 0.0f, 2.5f }, { 3.5f, 1.0f }, { -3.5f, 1.0f },
+    };
+    const arena_t *a = &s->arena;
+    vec2 c = s->camera.target;
+    for (int k = 0; k < (int)(sizeof(AROUND) / sizeof(AROUND[0])); k++) {
+        vec2 at = v2_add(c, AROUND[k]);
+        bool clear = at.x > a->min.x + 1.0f && at.x < a->max.x - 1.0f &&
+                     at.y > a->min.y + 1.0f && at.y < a->max.y - 1.0f;
+        for (int i = 0; i < a->obstacle_count && clear; i++) {
+            float r = a->obstacles[i].radius + PLAYER_RADIUS + 0.5f;
+            clear = v2_dist2(at, a->obstacles[i].pos) > r * r;
+        }
+        const float crush = DROP_CRUSH_RADIUS + PLAYER_RADIUS + 0.5f;
+        for (int i = 0; i < SIM_MAX_PLAYERS && clear; i++)
+            clear = !sim_player_alive(&s->players[i]) || v2_dist2(at, s->players[i].pos) > crush * crush;
+        if (clear)
+            return at;
+    }
+    return c; // the landing pushes the trooper out of whatever it hit
+}
+
+bool sim_player_join(sim_t *s, int port)
+{
+    player_t *p = &s->players[port];
+    uint8_t bit = (uint8_t)(1u << port);
+    if (s->humans & bit)
+        return p->active;
+    s->humans |= bit;
+    if (p->bot) {
+        p->bot = false;
+    } else if (!p->active && s->mission.phase < MISSION_BOARDING) {
+        sim_spawn_player(s, port, drop_spot(s));
+        p->state = PSTATE_DROPPING;
+        p->state_timer = DROP_IN_TICKS;
+    }
+    return p->active;
+}
+
+void sim_player_leave(sim_t *s, int port)
+{
+    uint8_t bit = (uint8_t)(1u << port);
+    if (port == 0 || !(s->humans & bit))
+        return;
+    s->humans &= (uint8_t)~bit;
+    player_t *p = &s->players[port];
+    if (s->settings.bots) {
+        p->bot = true;
+    } else {
+        p->active = false;
+        p->code = (code_entry_t){0};
+    }
 }
 
 void sim_push_event(sim_t *s, sim_event_type_t type, uint8_t a, vec2 pos, vec2 dir)

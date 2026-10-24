@@ -9,16 +9,18 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M4**: the full mission loop. The squad drops in by pod,
-holds two zones against the swarm, calls the dropship at the landing zone,
-survives a 75 s hold and boards; a results screen follows, and START begins
-a new mission. Built on M3's calldowns (Reinforce, Resupply, Machine Gun,
-Airstrike, Orbital Barrage, Sentry, now Extraction) entered as directional
-codes, friendly fire on everything, death until a teammate reinforces you from
-a shared pool, and M2's swarm: waves of all three bug types, a shared flow
-field, a uniform grid, skinned bugs sharing pose slots, bots for players 2-4,
-and the stress bench whose hardware numbers set the enemy cap (currently 64,
-one constant: `SIM_ENEMY_CAP_DEFAULT` in `src/sim/tuning.h`).
+**Status: milestone M5**: 1-4 players on one screen. Press START on any
+controller to join (mid-mission you arrive by pod), unplug to leave; each
+player has a colour (yellow, blue, green, pink) on their trooper, aim dots,
+HUD panel and results row, picks their own control scheme on the pause
+screen, and gets their own calldown panel. Bots can fill the ports nobody
+plays. Built on M4's mission loop (pod drop, hold two zones, Extraction, a
+75 s hold, boarding, results), M3's calldowns entered as directional codes,
+friendly fire on everything and reinforcements from a shared pool, and M2's
+swarm: waves of all three bug types, a shared flow field, a uniform grid,
+skinned bugs sharing pose slots, and the stress bench whose hardware numbers
+set the enemy cap (currently 64, one constant: `SIM_ENEMY_CAP_DEFAULT` in
+`src/sim/tuning.h`).
 
 ## Pinned dependencies
 
@@ -82,7 +84,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
-| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, then plays a quick mission (both zones, Extraction, the hold, boarding), checks the results screen, starts a new mission and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, starts a new mission and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make BENCH=1` | `hivebreakers-bench.z64`: runs the stress bench by itself 2 s after boot (see below) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
@@ -109,9 +111,31 @@ the USB debug log streams to the terminal and to `logs/usb-<timestamp>.log`
 (`-d <file> -b`). Ctrl+C to quit. Set `UNFLOADER=/path/to/UNFLoader` if it is
 not on your PATH.
 
+## Players
+
+Player 1 is always in. Anyone else presses **START** on their controller to
+join: at the start of a mission they ride a pod down with the squad;
+mid-mission their pod lands next to the squad (it doesn't use the
+reinforcement pool, and it crushes bugs, and teammates, it lands on). With
+bots on, joining takes over that port's bot where it stands. Once the
+dropship is down, or on the results screen, a new player starts with the
+next mission. Unplugging a controller for a second takes that player out (a
+bot carries on with their trooper if bots are on). Everyone who is playing
+stays in for the next mission.
+
+Each port has a colour: **P1 yellow, P2 blue, P3 green, P4 pink**: the
+trooper's shoulder pads, chest stripe and pack, their aim dots, their HUD
+panel label and their results row. The bottom of the screen has a panel per
+port: label (`AI` for a bot), health bar (a thin bar under it while
+reloading), and weapon and ammo, or `DROPPING`, `DOWN`, `ABOARD`, `NEXT
+MISSION`, or `PUSH START` for a plugged-in controller nobody is playing. The
+shared camera frames everyone; past its widest zoom, players can't walk
+further apart.
+
 ## Controls
 
-Pick a scheme per player in the debug menu (default A).
+Each player picks their scheme on the pause screen (**A** switches it;
+default A).
 
 | | Scheme A | Scheme B |
 |---|---|---|
@@ -124,8 +148,9 @@ Pick a scheme per player in the debug menu (default A).
 
 Both schemes have a soft aim-assist cone (about 10 degrees for A, which aims
 precisely with the stick; about 23 degrees for B, half an 8-way sector).
-Firing on an empty magazine reloads automatically. **Start** pauses and shows
-the controls. Debug combos all start with **L**, which neither scheme uses:
+Firing on an empty magazine reloads automatically. **Start** (from anyone
+playing) pauses and shows each player's scheme and the controls. Debug
+combos all start with **L**, which neither scheme uses:
 
 | Combo | Does |
 |---|---|
@@ -137,10 +162,9 @@ value, B closes:
 
 | Item | Does |
 |---|---|
-| P1 controls | Scheme A or B for player 1 |
 | Waves | Wave spawner on/off |
 | Spawn N mixed bugs | Spawns 10, 25, 50 or 100 (D-Left/Right) of the wave mix around the camera |
-| Bots P2-P4 | Fill ports 2-4 with bots (scheme B) that fight, follow P1 and call Reinforce for dead teammates |
+| Bots on free ports | Bots play ports 2-4 that nobody has joined: they fight, follow P1, call Reinforce for dead teammates and board the dropship (they get scheme B's aim assist) |
 | Force max zoom | Camera fully zoomed out, the worst case for drawing |
 | God mode / Infinite ammo / Refill ammo / Kill all bugs | What they say |
 | No calldown cooldowns | Throw calldowns back to back |
@@ -154,7 +178,8 @@ value, B closes:
 
 ## Calldowns
 
-Hold **R** and the calldown panel opens: every calldown, its code
+Hold **R** and your calldown panel opens (P1 top left, P2 top right, P3 and
+P4 below them, so several can be open at once): every calldown, its code
 (C-Up `^`, C-Down `v`, C-Left `<`, C-Right `>`), and whether it is ready. The
 inputs you have entered light up green and codes that no longer match dim. A
 wrong input clears the code; keep holding R and start again. Release R on a
@@ -207,18 +232,23 @@ later the mission fails.
    is left on the ground (the dead don't hold it up, but they don't count as
    extracted). If the squad is lost at any point, the mission fails.
 
-The **results screen** shows time, waves, kills by bug type, shots and hit
-rate, calldowns, deaths, reinforcements used, friendly hits and how many
-troopers were extracted. **START** begins a new mission on a new arena with
-the same settings. The same numbers go to the USB log once per mission:
+The **results screen** shows time, waves, reinforcements used, kills by bug
+type and how many troopers were extracted, then a row per player in their
+colour: kills (killing blows, including their sentry's and their strikes'),
+deaths, accuracy (their bullets that hit a bug), friendly hits (their bullets
+that hit a teammate), calldowns thrown, and how it ended (`aboard`, `down`,
+`left` behind alive, or `gone` from the game). **START** begins a new mission
+on a new arena with the same settings and players. The same numbers go to
+the USB log once per mission:
 
 ```
-RESULT build=5a122174 outcome=success time=103s waves=8 kills=131/66/6 shots=713 hits=596 calldowns=7 deaths=2 reinforced=2 friendly_hits=13 extracted=4/4
+RESULT build=6c2d5aaa outcome=success time=105s waves=7 kills=101/50/3 shots=728 hits=553 calldowns=8 deaths=2 reinforced=2 friendly_hits=96 extracted=4/4 p1=76/1/235/186/36/6/aboard p2=16/0/173/91/60/1/aboard ai3=31/1/167/143/0/0/aboard ai4=31/0/153/133/0/1/aboard
 ```
 
-(`kills=` is skitters/gnashers/bulwarks; `shots`, `hits` and
-`friendly_hits` count the troopers' own bullets: fired, hit a bug, hit a
-trooper.)
+(`kills=` is skitters/gnashers/bulwarks; `shots`, `hits`, `calldowns`,
+`deaths` and `friendly_hits` are the squad's totals. Then one field per
+player, `pN=` for a person and `aiN=` for a bot:
+kills/deaths/shots/hits/friendly_hits/calldowns/outcome.)
 
 ## Testing in an emulator
 
@@ -228,7 +258,8 @@ enabled: it shows the debug log and adds extra hardware checks. ares proves
 correctness. Its CPU and RSP timing is close enough to compare two versions of
 the code (that is how M2 was tuned), but it does not emulate RDP timing (the
 overlay shows `RDP n/a` there), so absolute frame rates and the enemy cap come
-from hardware. Project64 and similar emulators prove nothing.
+from hardware. Project64 and similar emulators prove nothing. ares may
+report controllers on all four ports, so panels 2-4 show `PUSH START`.
 
 ## Debug overlay and USB telemetry
 
@@ -282,7 +313,8 @@ line: gameplay code must never allocate.
 ## Stress bench (M2 go/no-go)
 
 Run `hivebreakers-bench.z64` (or *Run stress bench* in the debug menu). It
-turns on bots for players 2-4, god mode, infinite ammo and max zoom, switches
+turns on bots for the ports nobody plays (so four troopers and four HUD
+panels, the worst case), god mode, infinite ammo and max zoom, switches
 waves off, then holds the live bug count at 16, 32, 48, 64, 80, 96, 112, 128,
 160, 192, 224 and 256 in turn: a mixed swarm spawned on screen and topped up as
 the bots kill it. Each level settles for 2 s and is measured for 4 s; the HUD
@@ -308,9 +340,10 @@ src/sim/        pure-C simulation core: no libdragon includes, builds on the hos
                 calldown (codes, beacons, strikes, turrets, pickups,
                 reinforcements, explosions), mission (drop-in, zones,
                 extraction, boarding, stats), tuning.h
-src/n64/        thin N64 layer: boot checks, input, rendering, effects, HUD,
-                results screen, debug menu, overlay, timing, stress bench,
-                autotest bot
+src/n64/        thin N64 layer: boot checks, input (joining and leaving),
+                rendering, effects, HUD, results screen, debug menu, overlay,
+                timing, stress bench, autotest bot; palette.h has the player
+                colours
 tests/          host unit tests for src/sim (make test)
 tools/          toolchain setup, placeholder model generator, deploy scripts
 assets/models/  drop-in model overrides (see assets/models/README.md)
@@ -354,7 +387,9 @@ rom.mk          ROM build (called by the top-level Makefile)
 `tools/genmodels.py` (Python 3, standard library only) generates the
 placeholder low-poly, vertex-colored models as glTF, rigged and animated where
 needed (soldier: `run`, `idle`; bugs: `walk`, `attack`); the build converts
-them with Tiny3D's importer and packs them into the ROM filesystem. To replace
+them with Tiny3D's importer and packs them into the ROM filesystem. The
+soldier's accents are white with vertex alpha 0; the renderer's combiner puts
+each player's colour there, so all four share one mesh. To replace
 one with a Blender/Fast64 export, drop `assets/models/<name>.glb` in place;
 see `assets/models/README.md` for the export rules and the per-bug triangle,
 vertex and bone budgets.

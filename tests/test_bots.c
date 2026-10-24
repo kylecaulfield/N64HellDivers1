@@ -128,3 +128,22 @@ void test_bot_holds_fire_with_a_teammate_in_line(void)
     it = bot_intent(&s, 1);
     CHECK(it.fire);
 }
+
+// Once the dropship is down, bots head for the LZ and board, wherever they
+// were, even after everyone else has gone aboard.
+void test_bots_board_the_dropship(void)
+{
+    sim_t s;
+    setup_empty(&s);
+    s.settings.god_mode = true;
+    sim_set_bots(&s, true);
+    s.players[0].pos = s.arena.lz;
+    for (int i = 1; i < SIM_MAX_PLAYERS; i++)
+        s.players[i].pos = v2_add(s.arena.lz, v2(-14.0f + 7.0f * (float)i, -12.0f));
+    s.mission.phase = MISSION_BOARDING;
+    sim_input_t in[SIM_MAX_PLAYERS];
+    inputs_none(in);
+    step_n(&s, in, SIM_HZ * 15);
+    CHECK_EQ_INT(s.mission.phase, MISSION_SUCCESS);
+    CHECK_EQ_INT(s.mission.extracted, 0xF);
+}

@@ -100,7 +100,7 @@ void sim_kill_all_enemies(sim_t *s)
     s->active_count = 0;
 }
 
-void enemy_damage(sim_t *s, int idx, float amount, vec2 hit_pos, vec2 shot_dir)
+void enemy_damage(sim_t *s, int idx, float amount, vec2 hit_pos, vec2 shot_dir, int by)
 {
     enemy_t *e = &s->enemies[idx];
     if (!e->active)
@@ -115,6 +115,8 @@ void enemy_damage(sim_t *s, int idx, float amount, vec2 hit_pos, vec2 shot_dir)
         s->counts.enemies--;
         s->kills++;
         s->mission.stats.kills[e->type]++;
+        if (by >= 0 && by < SIM_MAX_PLAYERS)
+            s->mission.stats.players[by].kills++;
         sim_push_event(s, EV_ENEMY_DIED, e->type, e->pos, e->facing);
     }
 }

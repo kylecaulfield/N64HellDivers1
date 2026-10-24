@@ -12,8 +12,13 @@
 // Text styles on the builtin debug font, registered by overlay_init and used
 // by the HUD and the debug menu too.
 // Zone A is shown in STYLE_TITLE's amber, zone B in STYLE_ZONE_B's cyan
-// (render.c draws their markers in the same colours).
-enum { STYLE_NORMAL, STYLE_WARN, STYLE_TITLE, STYLE_DIM, STYLE_GOOD, STYLE_ZONE_B };
+// (render.c draws their markers in the same colours). STYLE_P1 + port is
+// each player's colour (palette.h).
+enum { STYLE_NORMAL, STYLE_WARN, STYLE_TITLE, STYLE_DIM, STYLE_GOOD, STYLE_ZONE_B, STYLE_P1 };
+
+// The builtin debug font's line height (ascent 11 + descent 2): a text
+// call's line_spacing is added to it, so pitch p is line_spacing p - 13.
+#define FONT_LINE_H 13
 
 // Sim phases timed through sim_t.mark: players (and the per-tick enemy list
 // and grid), flow, enemies (AI and movement), crowd (separation, rocks),

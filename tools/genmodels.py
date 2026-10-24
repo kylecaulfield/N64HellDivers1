@@ -17,7 +17,9 @@ follow too, see assets/models/README.md):
     skitter ~45, gnasher ~70, bulwark ~100, soldier ~100. Faces the fixed
     overhead camera can never see (most bottoms) are left out.
   * Materials carry Fast64 "f3d_mat" extras, because Tiny3D's importer refuses
-    materials without them. The combiner is shade-only (vertex color x light).
+    materials without them. The combiner is shade-only (vertex color x light);
+    the game swaps the soldier's for one that puts the player's colour on
+    vertices with alpha 0.
 """
 
 import json
@@ -29,7 +31,8 @@ import sys
 
 # ---------------------------------------------------------------------------
 # Tiny geometry kit. A mesh is a list of triangles: ((p0, p1, p2), rgb), with
-# counter-clockwise winding seen from outside. Colors are sRGB 0-255.
+# counter-clockwise winding seen from outside. Colors are sRGB 0-255, with an
+# optional fourth value: vertex alpha 0-255 (255 when left out).
 
 def v_add(a, b): return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 def v_sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -256,12 +259,16 @@ def add_attack(m, name, duration, root, rear, strike, extra=()):
 
 
 # ---------------------------------------------------------------------------
-# Palette (sRGB). Original designs: the player corps wears slate-and-amber
-# hazard armor; the swarm ("the Gnash") is chitin-violet with acid-green glands.
+# Palette (sRGB). Original designs: the player corps wears slate armor with
+# accents in each trooper's colour, and amber hazard markings on its gear; the
+# swarm ("the Gnash") is chitin-violet with acid-green glands.
 
 ARMOR      = (88, 98, 112)
 ARMOR_DARK = (52, 58, 68)
 AMBER      = (232, 150, 40)
+# The trooper's accents take the player's colour in game: white with vertex
+# alpha 0 marks them (the renderer's combiner puts the colour there).
+PLAYER_COLOR = (255, 255, 255, 0)
 VISOR      = (40, 200, 220)
 SKIN_GLOVE = (36, 36, 40)
 GUN        = (30, 32, 36)
@@ -293,15 +300,15 @@ def soldier():
     for leg, side in zip(legs, (-1, 1)):
         m.add(box(0.13 * side, 0.42, 0.0, 0.18, 0.84, 0.22, ARMOR_DARK, top_face=False, bottom_face=False), leg)
     t = []
-    # Torso with amber chest stripe
+    # Torso with a chest stripe in the player's colour
     t += box(0, 1.15, 0, 0.5, 0.62, 0.3, ARMOR, top=ARMOR_DARK, bottom_face=False)
-    t += quad((-0.18, 1.16, 0.152), (0.18, 1.16, 0.152), (0.18, 1.28, 0.152), (-0.18, 1.28, 0.152), AMBER)
+    t += quad((-0.18, 1.16, 0.152), (0.18, 1.16, 0.152), (0.18, 1.28, 0.152), (-0.18, 1.28, 0.152), PLAYER_COLOR)
     for side in (-1, 1):
-        t += box(0.33 * side, 1.38, 0, 0.18, 0.12, 0.3, AMBER, bottom_face=False)        # shoulder pads
+        t += box(0.33 * side, 1.38, 0, 0.18, 0.12, 0.3, PLAYER_COLOR, bottom_face=False)  # shoulder pads
         t += box(0.32 * side, 1.12, 0.12, 0.14, 0.42, 0.14, ARMOR_DARK,
                  top_face=False, bottom_face=False)                                      # arms
     t += box(0.0, 1.0, 0.45, 0.08, 0.1, 0.7, GUN, bottom_face=False)                     # rifle
-    t += box(0, 1.15, -0.24, 0.4, 0.5, 0.18, ARMOR_DARK, top=AMBER, bottom_face=False)  # backpack
+    t += box(0, 1.15, -0.24, 0.4, 0.5, 0.18, ARMOR_DARK, top=PLAYER_COLOR, bottom_face=False)  # backpack
     t += quad((-0.12, 1.57, 0.165), (0.12, 1.57, 0.165), (0.12, 1.65, 0.165), (-0.12, 1.65, 0.165), VISOR)
     m.add(t, hips)
     m.add(bipyramid(0, 1.62, 0, 0.17, 0.17, 0.18, ARMOR, sides=6), hips, smooth=True)    # helmet
@@ -644,7 +651,7 @@ def build_glb(name, model):
     positions, normals, colors, joints = [], [], [], []
     for (p0, p1, p2), col, bone, group in tris:
         face = v_norm(v_cross(v_sub(p1, p0), v_sub(p2, p0)))
-        lin = [srgb_to_linear(c) for c in col] + [1.0]
+        lin = [srgb_to_linear(c) for c in col[:3]] + [col[3] / 255.0 if len(col) > 3 else 1.0]
         for p in (p0, p1, p2):
             positions.append(p)
             normals.append(v_norm(smooth[key(p, group)]) if group >= 0 else face)

@@ -48,6 +48,7 @@ void calldowns_update(sim_t *s);
 
 // A blast: damages bugs and players (friendly fire) within `radius`, from
 // full at the centre down to EXPLOSION_EDGE at the edge. Ignores armor.
-void sim_explode(sim_t *s, vec2 pos, float radius, float damage, blast_kind_t kind);
+// Kills are credited to `by` (a player index or SOURCE_NONE).
+void sim_explode(sim_t *s, vec2 pos, float radius, float damage, blast_kind_t kind, int by);
 
 #endif

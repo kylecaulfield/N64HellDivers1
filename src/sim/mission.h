@@ -28,5 +28,7 @@ bool mission_can_call_extraction(const sim_t *s, int idx);
 void mission_start_extraction(sim_t *s);
 // Debug: capture every zone now.
 void mission_complete_objective(sim_t *s);
+// The squad's stats: every port's added up.
+player_stats_t mission_squad_stats(const mission_stats_t *st);
 
 #endif

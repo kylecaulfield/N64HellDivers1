@@ -40,7 +40,7 @@ enum { MENU_DEPLOY, MENU_SCORES, MENU_OPTIONS, MENU_CREDITS, MENU_COUNT };
 enum { OPT_MUSIC, OPT_SFX, OPT_BOTS, OPT_ERASE, OPT_BACK, OPT_COUNT };
 
 typedef struct {
-    char operation[32];
+    char operation[32];  // the name after "OPERATION": two words
     char planet[20];
     int  tip;
 } briefing_t;

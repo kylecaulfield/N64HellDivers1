@@ -95,7 +95,7 @@ void briefing_make(briefing_t *b, uint32_t seed)
 {
     uint32_t s = seed * 2654435761u + 1;
     s ^= s >> 13;
-    snprintf(b->operation, sizeof(b->operation), "OPERATION %s %s", ADJ[s & 15], NOUN[(s >> 4) & 15]);
+    snprintf(b->operation, sizeof(b->operation), "%s %s", ADJ[s & 15], NOUN[(s >> 4) & 15]);
     int n = 2 + (int)((s >> 8) & 1);
     b->planet[0] = 0;
     for (int k = 0; k < n; k++)
@@ -245,7 +245,9 @@ void frontend_briefing(const briefing_t *b, const sim_t *sim, uint8_t connected,
     const mission_t *m = &sim->mission;
     ui_stars(frames);
     ui_planet(218, 12);
-    rdpq_text_printf(&(rdpq_textparms_t){ .style_id = STYLE_DIM }, FONT, 20, 36, "MISSION BRIEFING");
+    // "OPERATION" goes on the label line, so the name never takes more than
+    // two heading lines (the longest words are nine letters).
+    rdpq_text_printf(&(rdpq_textparms_t){ .style_id = STYLE_DIM }, FONT, 20, 36, "MISSION BRIEFING: OPERATION");
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 190, .style_id = STYLE_TITLE, .wrap = WRAP_WORD },
                      FONT_HEADING, 20, 58, "%s", b->operation);
     rdpq_text_printf(&(rdpq_textparms_t){ .style_id = STYLE_DIM }, FONT, 20, 100, "PLANET %s", b->planet);

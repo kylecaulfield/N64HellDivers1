@@ -17,7 +17,12 @@ Makefile changes are needed.
 | `mgcase.glb` | Machine gun case |
 | `pod.glb` | Drop pod: the squad's drop-in at the start of a mission, and Reinforce (seen falling onto its beacon) |
 | `rock_a.glb`, `rock_b.glb`, `rock_c.glb` | Arena obstacles. Collision radii are 0.9, 1.35 and 0.55 m (`rock_radius` in `src/sim/arena.c`); keep a replacement about that size or update the table |
-| `ground.glb` | The whole 64x64 m arena floor, centred on the origin |
+| `ground.glb` | The whole 64x64 m arena floor, centred on the origin (the placeholder has grass tufts and pebbles: 842 triangles, drawn once per frame) |
+| `shadow.glb` | Blob shadow: a flat dark disc, 1 m radius, facing up. Scaled and drawn under soldiers, pods and drops (shrinking as they fall) and the dropship |
+
+The bugs carry their own shadow: a flat dark disc in the mesh, weighted to
+the root bone, just above the ground (keep one in a replacement, or they
+float).
 
 ## Export rules (Blender + Fast64)
 
@@ -38,7 +43,7 @@ Makefile changes are needed.
 
 ## Budgets for the bugs
 
-Up to the enemy cap (around a hundred) bugs are on screen at once, so per-bug
+Up to the enemy cap (64 by default) bugs are on screen at once, so per-bug
 cost is what limits the swarm. In the M2 bench (in ares so far; hardware
 numbers pending) the RSP/RDP time per bug is what runs out first, and it
 scales with:

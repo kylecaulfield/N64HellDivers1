@@ -23,7 +23,7 @@ static const vec2 DROP_SLOT[SIM_MAX_PLAYERS] = {
 static void start(sim_t *s, uint32_t seed, uint8_t humans)
 {
     rng_seed(&s->rng, seed);
-    s->humans = humans | 1u;
+    s->humans = humans;
     s->reinforcements = REINFORCE_POOL;
     s->squad = SQUAD_FIGHTING;
     arena_generate(&s->arena, &s->rng);
@@ -51,10 +51,10 @@ void sim_init(sim_t *s, uint32_t seed)
     start(s, seed, 1u);
 }
 
-void sim_restart(sim_t *s, uint32_t seed)
+// A fresh start keeping the settings and the profiling hook.
+static void reset(sim_t *s, uint32_t seed, uint8_t humans)
 {
     sim_settings_t settings = s->settings;
-    uint8_t humans = s->humans;
     sim_mark_fn mark = s->mark;
     void *mark_ctx = s->mark_ctx;
     memset(s, 0, sizeof(*s));
@@ -62,6 +62,17 @@ void sim_restart(sim_t *s, uint32_t seed)
     s->mark = mark;
     s->mark_ctx = mark_ctx;
     start(s, seed, humans);
+}
+
+void sim_restart(sim_t *s, uint32_t seed)
+{
+    reset(s, seed, s->humans | 1u);
+}
+
+void sim_demo(sim_t *s, uint32_t seed)
+{
+    s->settings.bots = true;
+    reset(s, seed, 0);
 }
 
 // A spot near the squad for a pod: inside the arena, clear of rocks, and
@@ -165,6 +176,9 @@ void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS])
 {
     if (mission_over(s))
         return; // the world stops behind the results screen
+    const sim_settings_t *st = &s->settings;
+    if (st->god_mode || st->infinite_ammo || st->free_calldowns || st->quick_mission)
+        s->mission.assisted = true;
 
     // Everything this tick reads the enemy list and grid built here
     // (timed as part of the players phase).

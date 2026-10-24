@@ -97,6 +97,12 @@ void overlay_set_heap_baseline(void)
     debugf("heap baseline: %d bytes\n", ov.heap_baseline);
 }
 
+void overlay_clear_heap_baseline(void)
+{
+    ov.heap_baseline = -1;
+    ov.heap_growth = 0;
+}
+
 static void log_stats(void)
 {
     mem_stats_t m = mem_stats();

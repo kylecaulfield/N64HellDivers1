@@ -9,18 +9,27 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M5**: 1-4 players on one screen. Press START on any
-controller to join (mid-mission you arrive by pod), unplug to leave; each
-player has a colour (yellow, blue, green, pink) on their trooper, aim dots,
-HUD panel and results row, picks their own control scheme on the pause
-screen, and gets their own calldown panel. Bots can fill the ports nobody
-plays. Built on M4's mission loop (pod drop, hold two zones, Extraction, a
-75 s hold, boarding, results), M3's calldowns entered as directional codes,
-friendly fire on everything and reinforcements from a shared pool, and M2's
-swarm: waves of all three bug types, a shared flow field, a uniform grid,
-skinned bugs sharing pose slots, and the stress bench whose hardware numbers
-set the enemy cap (currently 64, one constant: `SIM_ENEMY_CAP_DEFAULT` in
-`src/sim/tuning.h`).
+**Status: milestone M6**: the whole game around the missions. A loading
+screen at boot, a splash, the title over a live attract demo, a menu,
+options, credits and a high score table; a mission briefing that doubles as
+the loading and join screen; then the mission, its results, initials for a
+new high score, and the table. High scores and settings are kept in the
+cartridge's EEPROM. Original music (title, mission, a faster track for the
+extraction hold, victory and defeat stings) and 22 sound effects, all
+synthesized by `tools/genaudio.py`. Graphics polish: blob shadows under
+everything, a ground with tufts and pebbles, smoke trails behind pods and
+the dropship, engine glow, the camera swooping in with the drop, fades
+between screens, and a drawn logo and heading font.
+
+Built on M5's 1-4 players on one screen (START on any controller to join,
+a colour per player on their trooper, aim dots, HUD panel and results row,
+a control scheme each, bots on the ports nobody plays), M4's mission loop
+(pod drop, hold two zones, Extraction, a 75 s hold, boarding, results), M3's
+calldowns entered as directional codes, friendly fire on everything and
+reinforcements from a shared pool, and M2's swarm: waves of all three bug
+types, a shared flow field, a uniform grid, skinned bugs sharing pose slots,
+and the stress bench whose hardware numbers set the enemy cap (currently 64,
+one constant: `SIM_ENEMY_CAP_DEFAULT` in `src/sim/tuning.h`).
 
 ## Pinned dependencies
 
@@ -74,7 +83,8 @@ make                    # -> hivebreakers.z64
 ```
 
 `make` builds libdragon and Tiny3D from the submodules into `build/sdk` (only
-when a pin changes), generates and converts the models, and links the ROM.
+when a pin changes), generates and converts the models, music, sound effects
+and 2D art, and links the ROM.
 If you already have a libdragon toolchain, skip `make toolchain` and pass
 `N64_GCCPREFIX=/path/to/toolchain` (the directory containing
 `bin/mips64-elf-gcc`).
@@ -84,7 +94,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
-| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, starts a new mission and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that goes through the splash, title, menu and briefing, then moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, enters initials for the high score, checks they reached the save, goes on to the next mission's briefing and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make BENCH=1` | `hivebreakers-bench.z64`: runs the stress bench by itself 2 s after boot (see below) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
@@ -111,6 +121,32 @@ the USB debug log streams to the terminal and to `logs/usb-<timestamp>.log`
 (`-d <file> -b`). Ctrl+C to quit. Set `UNFLOADER=/path/to/UNFLoader` if it is
 not on your PATH.
 
+**Saves.** The ROM header asks for a 4 Kbit EEPROM (`N64_ROM_SAVETYPE` in
+`rom.mk`), which the EverDrive picks up by itself. To keep high scores
+between power cycles, copy the ROM to the SD card and start it from the
+EverDrive menu: the X7 writes the save to the SD card when you go back to
+its menu (RESET), so do that before switching off. Without an EEPROM the
+title says `NO EEPROM: SCORES WON'T BE KEPT` and the game runs on defaults.
+
+## Screens
+
+| Screen | What happens |
+|---|---|
+| Loading | At boot, while models, music and sounds load (a bar fills) |
+| Splash | Credits card, 3 s (A, B or START skips) |
+| Title | The logo over the attract demo: bots playing a real mission in the background. Shows the top score. Left alone for 30 s it shows the high score table for 10 s, then comes back; the demo starts a new mission when the last one ends, or every 2 minutes |
+| Menu | **Deploy**, **High scores**, **Options**, **Credits**. Stick or D-pad, A selects, B goes back |
+| Options | Music and sound volume (0-10, left/right), bots fill empty slots (on/off), erase high scores (hold A for 1.5 s), back. Saved to the EEPROM when you leave |
+| Briefing | The loading screen for the mission: a generated operation name and planet, the objectives, the squad and a tip. Controllers 2-4 press START to join (B to leave again); player 1 presses START (or A) to drop, B to go back to the title |
+| Mission | The game. START pauses (see Controls) |
+| Results | After the dropship leaves (or the squad is lost): the mission's numbers, each player's row, and the score |
+| Initials | For a score that makes the table: up/down picks a letter, A or right moves on, B or left goes back, START (or A on the last letter) saves it |
+| High scores | The ten best missions: initials, score, waves, squad size and `EVAC` if the dropship got away. After a mission, START goes to the next briefing with the same squad, B to the title |
+
+Music: the title track plays from the title to the briefing, the mission
+track from the drop, a faster one for the extraction hold, then a victory or
+defeat sting on the results. It is turned down while paused.
+
 ## Players
 
 Player 1 is always in. Anyone else presses **START** on their controller to
@@ -135,7 +171,7 @@ further apart.
 ## Controls
 
 Each player picks their scheme on the pause screen (**A** switches it;
-default A).
+default A; remembered in the EEPROM).
 
 | | Scheme A | Scheme B |
 |---|---|---|
@@ -149,8 +185,9 @@ default A).
 Both schemes have a soft aim-assist cone (about 10 degrees for A, which aims
 precisely with the stick; about 23 degrees for B, half an 8-way sector).
 Firing on an empty magazine reloads automatically. **Start** (from anyone
-playing) pauses and shows each player's scheme and the controls. Debug
-combos all start with **L**, which neither scheme uses:
+playing) pauses and shows each player's scheme and the controls; there,
+player 1 **holds B** for a second to quit to the title. Debug combos all
+start with **L**, which neither scheme uses:
 
 | Combo | Does |
 |---|---|
@@ -238,17 +275,57 @@ colour: kills (killing blows, including their sentry's and their strikes'),
 deaths, accuracy (their bullets that hit a bug), friendly hits (their bullets
 that hit a teammate), calldowns thrown, and how it ended (`aboard`, `down`,
 `left` behind alive, or `gone` from the game). **START** begins a new mission
-on a new arena with the same settings and players. The same numbers go to
-the USB log once per mission:
+and the mission's **score** with its breakdown. **START** goes on to the
+initials (for a new high score) or the high score table. The same numbers go
+to the USB log once per mission:
 
 ```
-RESULT build=6c2d5aaa outcome=success time=105s waves=7 kills=101/50/3 shots=728 hits=553 calldowns=8 deaths=2 reinforced=2 friendly_hits=96 extracted=4/4 p1=76/1/235/186/36/6/aboard p2=16/0/173/91/60/1/aboard ai3=31/1/167/143/0/0/aboard ai4=31/0/153/133/0/1/aboard
+RESULT build=6c2d5aaa outcome=success time=105s waves=7 kills=101/50/3 shots=728 hits=553 calldowns=8 deaths=2 reinforced=2 friendly_hits=96 extracted=4/4 score=8450 p1=76/1/235/186/36/6/aboard p2=16/0/173/91/60/1/aboard ai3=31/1/167/143/0/0/aboard ai4=31/0/153/133/0/1/aboard
 ```
 
 (`kills=` is skitters/gnashers/bulwarks; `shots`, `hits`, `calldowns`,
-`deaths` and `friendly_hits` are the squad's totals. Then one field per
-player, `pN=` for a person and `aiN=` for a bot:
+`deaths` and `friendly_hits` are the squad's totals. `score=` is followed by
+` assisted` when debug aids were used. Then one field per player, `pN=` for
+a person and `aiN=` for a bot:
 kills/deaths/shots/hits/friendly_hits/calldowns/outcome.)
+
+## Scoring
+
+| | Points |
+|---|---|
+| Skitter / gnasher / bulwark killed | 10 / 25 / 60 |
+| Zone held | 500 each |
+| Extracted (the dropship got away) | 2000, plus 500 per trooper aboard |
+| Time bonus (successful missions only) | 5 per second under 10 minutes |
+| Reinforcement used | -250 each |
+
+A failed mission keeps its kills and zones. The constants are `SCORE_*` in
+`src/sim/tuning.h`; the sum is `mission_score()` in `src/sim/mission.c`.
+The table keeps the ten best (a new score goes below equal ones). A mission
+where god mode, infinite ammo, no calldown cooldowns, quick mission or
+*Complete the objective* was used at any point still shows its score, marked
+`DEBUG AIDS USED: NOT RANKED`, and isn't entered. A fresh cartridge starts
+with a table of made-up scores to beat.
+
+## Audio
+
+All original: `tools/genaudio.py` (Python 3, standard library only)
+synthesizes every instrument and sound from oscillators, noise and envelopes,
+and writes the music as FastTracker II modules (D minor; title 92 BPM,
+mission 132 BPM, hold 150 BPM, two short stings; 8 channels each). The build
+converts them with libdragon's `audioconv64` (VADPCM-compressed samples) and
+plays them with its XM player and mixer at 22050 Hz: 8 mixer channels for
+music, 8 for sound effects. Sounds come from the sim's events (shots, hits,
+deaths, explosions, code inputs, beacons, pickups, zones, reinforcements,
+mission phases, a new wave), panned and quietened by where they happen on
+screen, and capped per frame so a swarm dying under a barrage doesn't drown
+everything else. Everything is loaded at boot and every mixer channel is
+played once while the loading screen is up, so no audio allocates during a
+mission (the heap watchdog checks).
+
+To replace a track or a sound, drop `assets/music/<name>.xm` or
+`assets/sfx/<name>.wav` in place (names in `rom.mk`); the build uses it
+instead of the generated one, like the models.
 
 ## Testing in an emulator
 
@@ -306,9 +383,10 @@ STATS t=90 fps=29.91 frame_avg=33429us frame_max=33436us cpu_avg=7503us cpu_max=
 (`ph=` is pl/fl/en/cr/pr/cd/sp and `ren=` is anim/build/sub/hud, in
 microseconds.)
 
-The heap is snapshotted after the first 60 frames. If it ever grows after
-that, the overlay shows `GREW!` in red and the log prints a `WARN heap grew`
-line: gameplay code must never allocate.
+The heap is snapshotted 30 frames into each mission. If it grows after that
+during the mission, the overlay shows `GREW!` in red and the log prints a
+`WARN heap grew` line: gameplay code must never allocate. (The menus and
+briefing may allocate; each mission starts a new baseline.)
 
 ## Stress bench (M2 go/no-go)
 
@@ -328,8 +406,14 @@ BENCH level=48 enemies=48 drawn=46 fps=29.91 frame_avg=33429 frame_max=49645 cpu
 Times are microseconds per frame, averaged over the 4 s (`_max` is the worst
 frame). `rdp`/`gpu_done` are -1 where the hardware counter is unavailable
 (ares). The highest level that keeps `fps` at 29.9 with `drop=0` is the
-ceiling; the enemy cap goes somewhat below it, leaving room for calldowns,
-the mission and audio (M6).
+ceiling; the enemy cap goes somewhat below it, leaving room for calldowns
+and the mission. The bench ROM plays the mission music and every sound, so
+its numbers include audio.
+
+In ares (CPU and RSP timing only), M6 holds 29.9 fps up to 64-80 bugs, and
+drops to about 25-27 at 96, where M5 held 29.5: the audio mixing and the
+extra drawing (shadows, ground detail, trails) cost about one bug level of
+headroom. The cap of 64 is unaffected; hardware decides whether it can go up.
 
 ## Project layout
 
@@ -339,14 +423,19 @@ src/sim/        pure-C simulation core: no libdragon includes, builds on the hos
                 grid (spatial hash), flow (flow field), waves, bot,
                 calldown (codes, beacons, strikes, turrets, pickups,
                 reinforcements, explosions), mission (drop-in, zones,
-                extraction, boarding, stats), tuning.h
+                extraction, boarding, stats, score), tuning.h,
+                hiscore (the high score table)
 src/n64/        thin N64 layer: boot checks, input (joining and leaving),
-                rendering, effects, HUD, results screen, debug menu, overlay,
-                timing, stress bench, autotest bot; palette.h has the player
-                colours
+                main (the screen flow), frontend (the screens), ui (2D
+                drawing helpers), save (EEPROM), sound, rendering, effects,
+                HUD, results screen, debug menu, overlay, timing, stress
+                bench, autotest bot; palette.h has the player colours
 tests/          host unit tests for src/sim (make test)
-tools/          toolchain setup, placeholder model generator, deploy scripts
+tools/          toolchain setup, generators for the models (genmodels.py),
+                music and sound (genaudio.py) and 2D art (genart.py), deploy
+                scripts
 assets/models/  drop-in model overrides (see assets/models/README.md)
+assets/music/, assets/sfx/  drop-in .xm / .wav overrides (optional)
 vendor/         pinned libdragon and Tiny3D submodules
 rom.mk          ROM build (called by the top-level Makefile)
 ```
@@ -364,7 +453,8 @@ rom.mk          ROM build (called by the top-level Makefile)
   All timers are in ticks. The loop waits on that interrupt counter, not on
   `vi_wait_vblank()` (see the known upstream issues above).
 - **No allocation during gameplay.** Fixed pools for enemies, projectiles,
-  particles and calldowns, allocated at load. The heap watchdog enforces it.
+  particles and calldowns, allocated at load; audio loaded and its mixer
+  channels warmed up at boot. The heap watchdog enforces it.
 - **Floats, not doubles.** The N64 build uses `-ffast-math`; host tests
   compare floats with tolerances, never exactly.
 - **One flow field, no per-bug pathfinding.** A single distance-to-nearest-
@@ -389,10 +479,18 @@ placeholder low-poly, vertex-colored models as glTF, rigged and animated where
 needed (soldier: `run`, `idle`; bugs: `walk`, `attack`); the build converts
 them with Tiny3D's importer and packs them into the ROM filesystem. The
 soldier's accents are white with vertex alpha 0; the renderer's combiner puts
-each player's colour there, so all four share one mesh. To replace
+each player's colour there, so all four share one mesh. Blob shadows are
+one shared disc model (`shadow`) drawn under soldiers, falling pods and
+drops, and the dropship;
+the bugs carry theirs in their own mesh. To replace
 one with a Blender/Fast64 export, drop `assets/models/<name>.glb` in place;
 see `assets/models/README.md` for the export rules and the per-bug triangle,
 vertex and bone budgets.
+
+The logo, the heading font and the briefing's planet come from
+`tools/genart.py` (also standard library only), drawn as pixel art and
+converted with libdragon's `mksprite` and `mkfont`. The text font is
+libdragon's built-in monogram (CC0).
 
 ## Naming
 

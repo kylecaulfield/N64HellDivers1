@@ -25,7 +25,10 @@ typedef struct {
     uint16_t skeletons;   // skeletons updated this frame
 } render_stats_t;
 
-void render_init(void);
+// Loads every model; `progress` (may be NULL) is called after each one.
+void render_init(void (*progress)(void));
+// How many times render_init calls `progress`.
+int  render_model_count(void);
 // Build the static matrices (floor, rocks). Call after the sim made its arena.
 void render_bind_world(const sim_t *sim);
 // Attach the next framebuffer and draw the 3D scene and particles.

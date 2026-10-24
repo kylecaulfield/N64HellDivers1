@@ -52,6 +52,29 @@ player_stats_t mission_squad_stats(const mission_stats_t *st)
     return sum;
 }
 
+mission_score_t mission_score(const sim_t *s)
+{
+    const mission_t *m = &s->mission;
+    mission_score_t sc = {0};
+    sc.kills = m->stats.kills[ENEMY_SKITTER] * SCORE_KILL_SKITTER + m->stats.kills[ENEMY_GNASHER] * SCORE_KILL_GNASHER +
+               m->stats.kills[ENEMY_BULWARK] * SCORE_KILL_BULWARK;
+    for (int z = 0; z < MISSION_ZONES; z++)
+        sc.zones += m->zones[z].captured ? SCORE_ZONE : 0;
+    if (m->phase == MISSION_SUCCESS) {
+        int aboard = 0;
+        for (int i = 0; i < SIM_MAX_PLAYERS; i++)
+            aboard += (m->extracted >> i) & 1;
+        sc.extraction = SCORE_EXTRACTED + aboard * SCORE_ABOARD;
+        int secs = (int)(m->stats.ticks / SIM_HZ);
+        sc.time = secs < SCORE_PAR_SECONDS ? (SCORE_PAR_SECONDS - secs) * SCORE_PER_SECOND : 0;
+    }
+    sc.reinforcements = -(int32_t)m->stats.reinforcements * SCORE_REINFORCEMENT;
+    sc.total = sc.kills + sc.zones + sc.extraction + sc.time + sc.reinforcements;
+    if (sc.total < 0)
+        sc.total = 0;
+    return sc;
+}
+
 static bool in_circle(vec2 p, vec2 c, float r)
 {
     return v2_dist2(p, c) <= r * r;
@@ -78,6 +101,7 @@ void mission_start_extraction(sim_t *s)
 
 void mission_complete_objective(sim_t *s)
 {
+    s->mission.assisted = true;
     for (int i = 0; i < MISSION_ZONES; i++) {
         s->mission.zones[i].captured = true;
         s->mission.zones[i].held = (uint16_t)mission_capture_ticks(s);

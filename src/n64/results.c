@@ -1,6 +1,7 @@
 #include "results.h"
 #include "mission.h"
 #include "overlay.h"
+#include "ui.h"
 #include "version.h"
 
 #include <libdragon.h>
@@ -58,17 +59,13 @@ static unsigned accuracy(const player_stats_t *p)
     return p->shots ? (unsigned)(p->hits * 100 / p->shots) : 0;
 }
 
-void results_draw(const sim_t *sim)
+void results_draw(const sim_t *sim, const mission_score_t *sc, int rank)
 {
     const mission_stats_t *st = &sim->mission.stats;
     bool won = sim->mission.phase == MISSION_SUCCESS;
-    const int x = 22, y0 = 48;
-    rdpq_set_mode_fill(RGBA32(10, 12, 18, 0xFF));
-    rdpq_fill_rectangle(x - 8, y0 - 18, 320 - x + 8, y0 + 150);
-
-    rdpq_textparms_t centre = { .width = 320 - 2 * x, .align = ALIGN_CENTER };
-    centre.style_id = won ? STYLE_GOOD : STYLE_WARN;
-    rdpq_text_printf(&centre, FONT, x, y0, won ? "MISSION COMPLETE" : "MISSION FAILED");
+    const int x = 22;
+    ui_box(14, 20, 306, 206);
+    ui_heading(42, won ? STYLE_GOOD : STYLE_WARN, won ? "MISSION COMPLETE" : "MISSION FAILED");
 
     // The squad, then a row per player in their colour, as one text call.
     char text[640];
@@ -91,13 +88,21 @@ void results_draw(const sim_t *sim)
                        STYLE_P1 + i, sim->players[i].bot ? "AI" : label, p->kills, p->deaths, accuracy(p),
                        p->friendly_hits, p->calldowns, outcome(sim, i));
     }
-    rdpq_text_printf(&(rdpq_textparms_t){ .line_spacing = 12 - FONT_LINE_H }, FONT, x, y0 + 22, "%s", text);
+    rdpq_text_printf(&(rdpq_textparms_t){ .line_spacing = 12 - FONT_LINE_H }, FONT, x, 60, "%s", text);
 
-    centre.style_id = STYLE_TITLE;
-    rdpq_text_printf(&centre, FONT, x, y0 + 144, "PRESS START FOR A NEW MISSION");
+    char line[64];
+    snprintf(line, sizeof(line), "SCORE %06ld", (long)sc->total);
+    ui_heading(178, STYLE_TITLE, line);
+    rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM },
+                     FONT, 0, 190, "KILLS %ld ZONES %ld EVAC %ld TIME %ld %ld",
+                     (long)sc->kills, (long)sc->zones, (long)sc->extraction, (long)sc->time, (long)sc->reinforcements);
+    const char *footer = rank >= 0 ? "^04NEW HIGH SCORE!^00  PRESS START"
+                       : rank == -2 ? "^03DEBUG AIDS USED: NOT RANKED^00  PRESS START" : "PRESS START";
+    rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_TITLE },
+                     FONT, 0, 202, "%s", footer);
 }
 
-void results_log(const sim_t *sim)
+void results_log(const sim_t *sim, const mission_score_t *sc)
 {
     const mission_stats_t *st = &sim->mission.stats;
     player_stats_t sq = mission_squad_stats(st);
@@ -115,10 +120,11 @@ void results_log(const sim_t *sim)
                        (unsigned long)p->hits, p->friendly_hits, p->calldowns, outcome(sim, i));
     }
     debugf("RESULT build=%s outcome=%s time=%lus waves=%u kills=%u/%u/%u shots=%lu hits=%lu calldowns=%u "
-           "deaths=%u reinforced=%u friendly_hits=%u extracted=%d/%d%s\n",
+           "deaths=%u reinforced=%u friendly_hits=%u extracted=%d/%d score=%ld%s%s\n",
            GAME_VERSION, sim->mission.phase == MISSION_SUCCESS ? "success" : "failed",
            (unsigned long)(st->ticks / SIM_HZ), sim->waves.number,
            st->kills[ENEMY_SKITTER], st->kills[ENEMY_GNASHER], st->kills[ENEMY_BULWARK],
            (unsigned long)sq.shots, (unsigned long)sq.hits, sq.calldowns, sq.deaths, st->reinforcements,
-           sq.friendly_hits, count_bits(sim->mission.extracted), squad_size(sim), per);
+           sq.friendly_hits, count_bits(sim->mission.extracted), squad_size(sim), (long)sc->total,
+           sim->mission.assisted ? " assisted" : "", per);
 }

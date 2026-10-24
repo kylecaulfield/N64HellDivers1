@@ -336,6 +336,7 @@ typedef struct {
     uint16_t        timer;    // ticks left in DROP / HOLD
     zone_state_t    zones[MISSION_ZONES];
     uint8_t         extracted; // bit per player aboard the dropship
+    bool            assisted;  // a debug aid was on at some point: no high score
     mission_stats_t stats;
 } mission_t;
 
@@ -463,6 +464,9 @@ void sim_init(sim_t *s, uint32_t seed);
 // A new mission with the same settings, players and bots as the current
 // one. Everyone rides a pod down.
 void sim_restart(sim_t *s, uint32_t seed);
+// The title screen's attract mode: a mission played by bots on all four
+// ports, with nobody playing.
+void sim_demo(sim_t *s, uint32_t seed);
 void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS]);
 
 // Events accumulate across ticks until the consumer clears them (the renderer

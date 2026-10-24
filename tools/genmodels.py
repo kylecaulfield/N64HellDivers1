@@ -289,6 +289,26 @@ ROCK_A     = (122, 104, 86)
 ROCK_B     = (98, 86, 74)
 ROCK_C     = (140, 124, 100)
 GROUND     = (120, 100, 70)
+SHADOW     = (58, 46, 32)   # a blob under each unit: the lit ground, darkened
+SOIL_DARK  = (92, 74, 52)
+SAND       = (142, 122, 86)
+RUST       = (132, 92, 62)
+TUFT       = (96, 98, 48)
+PEBBLE     = (104, 96, 88)
+
+
+def shadow_disc(radius, y=0.03, sides=6):
+    """A flat dark polygon on the ground under a unit: a fan from one corner,
+    sides - 2 triangles, facing up."""
+    pts = [(math.sin(2 * math.pi * k / sides) * radius, y, math.cos(2 * math.pi * k / sides) * radius)
+           for k in range(sides)]
+    return [((pts[0], pts[k], pts[k + 1]), SHADOW) for k in range(1, sides - 1)]
+
+
+def shadow():
+    """Unit blob shadow (radius 1 m) for things that tilt or fly: troopers
+    (who pitch flat when diving), falling pods, the dropship. Scaled per use."""
+    return shadow_disc(1.0, y=0.0)
 
 
 def soldier():
@@ -367,6 +387,7 @@ def skitter():
         m.add(spike((0.04 * side, 0.27, 0.36), (0.08 * side, 0.25, 0.52), 0.025, CLAW), root,
               smooth=True)                                                               # claws
     legs = bug_legs(m, root, 3, 0.28, 0.16, 0.42, CHITIN_DK, thickness=0.035, knee=False)
+    m.add(shadow_disc(0.42), root)
     add_walk(m, "walk", 0.36, root, pivot, legs, swing=0.45, lift=0.35, bob=0.02)
     add_attack(m, "attack", 0.4, root, rear=-0.35, strike=0.3)
     return m
@@ -391,6 +412,7 @@ def gnasher():
         m.add(spike((0.24 * side, 1.0, 0.22), elbow, 0.05, CHITIN_DK), arms, smooth=True)
         m.add(spike(elbow, (0.28 * side, 0.95, 0.92), 0.045, CLAW), arms, smooth=True)
     legs = bug_legs(m, root, 2, 0.6, 0.34, 0.7, CHITIN_DK, thickness=0.07, knee=False)
+    m.add(shadow_disc(0.62), root)
     sway = [(arms, "rotation", sample_loop(0.6, 12, lambda ph: q_axis((1, 0, 0), 0.12 * math.sin(ph))))]
     add_walk(m, "walk", 0.6, root, pivot, legs, swing=0.4, lift=0.3, bob=0.03, extra=sway)
     raise_strike = [(arms, "rotation", sample_curve(0.6, [(0.0, 0.0), (0.55, -1.0), (0.75, 0.5), (1.0, 0.0)],
@@ -425,6 +447,7 @@ def bulwark():
         m.add(spike((0.36 * side, 1.4, -0.6), (0.46 * side, 1.75, -0.7), 0.1, GLAND), root, smooth=True)
         m.add(spike((0.2 * side, 1.0, 0.9), (0.24 * side, 0.85, 1.4), 0.07, CLAW), root, smooth=True)
     legs = bug_legs(m, root, 3, 0.95, 0.5, 1.0, CHITIN_DK, thickness=0.14, splay=0.5)
+    m.add(shadow_disc(0.95), root)
     add_walk(m, "walk", 1.1, root, pivot, legs, swing=0.3, lift=0.25, bob=0.05)
     add_attack(m, "attack", 1.0, root, rear=-0.35, strike=0.2)
     return m
@@ -529,22 +552,57 @@ def rock(seed, base_color, size):
 
 
 def arena_floor():
-    """The whole 64x64 m arena floor, 4 m tiles with colour variation so
-    movement reads on screen. The outermost ring of tiles is darker to mark
-    the arena edge. Matches ARENA_HALF_SIZE in src/sim/tuning.h."""
+    """The whole 64x64 m arena floor: a 4 m grid of shared vertices with
+    smooth colour variation (darker soil, sand and rusty patches) so movement
+    reads on screen, a darker outer ring marking the edge, and scattered
+    grass tufts and pebbles. Matches ARENA_HALF_SIZE in src/sim/tuning.h."""
     rnd = random.Random(99)
     half, tile = 32.0, 4.0
     n = int(2 * half / tile)
+    # Patch "noise": a few soft blobs of each colour.
+    blobs = [(rnd.uniform(-half, half), rnd.uniform(-half, half), rnd.uniform(5, 11), c)
+             for c in [SOIL_DARK] * 7 + [SAND] * 6 + [RUST] * 4]
+
+    def colour(x, z):
+        c = list(GROUND)
+        for bx, bz, r, bc in blobs:
+            w = max(0.0, 1.0 - math.hypot(x - bx, z - bz) / r) ** 2
+            c = [a + (b - a) * w for a, b in zip(c, bc)]
+        k = 0.94 + 0.12 * rnd.random()
+        if abs(x) >= half - 0.01 or abs(z) >= half - 0.01:
+            k *= 0.62
+        elif abs(x) >= half - tile - 0.01 or abs(z) >= half - tile - 0.01:
+            k *= 0.8
+        return tuple(min(255, int(v * k)) for v in c)
+
+    corner = {}
+    for iz in range(n + 1):
+        for ix in range(n + 1):
+            x, z = -half + ix * tile, -half + iz * tile
+            corner[(ix, iz)] = ((x, 0.0, z), colour(x, z))
     tris = []
     for iz in range(n):
         for ix in range(n):
-            x0, z0 = -half + ix * tile, -half + iz * tile
-            x1, z1 = x0 + tile, z0 + tile
-            k = 0.9 + rnd.random() * 0.14 + (0.04 if (ix + iz) % 2 else 0.0)
-            if ix in (0, n - 1) or iz in (0, n - 1):
-                k *= 0.7
-            col = tuple(min(255, int(c * k)) for c in GROUND)
-            tris += quad((x0, 0, z1), (x1, 0, z1), (x1, 0, z0), (x0, 0, z0), col)
+            a, b = corner[(ix, iz + 1)], corner[(ix + 1, iz + 1)]
+            c, d = corner[(ix + 1, iz)], corner[(ix, iz)]
+            tris.append(((a[0], b[0], c[0]), (a[1], b[1], c[1])))
+            tris.append(((a[0], c[0], d[0]), (a[1], c[1], d[1])))
+    # Decoration: tiny, so it costs little, and away from the edge ring.
+    for _ in range(90):
+        x, z = rnd.uniform(-half + 5, half - 5), rnd.uniform(-half + 5, half - 5)
+        a = rnd.uniform(0, math.pi)
+        dx, dz = math.cos(a) * 0.18, math.sin(a) * 0.18
+        h = rnd.uniform(0.18, 0.32)
+        tris.append((((x - dx, 0.0, z - dz), (x + dx, 0.0, z + dz), (x, h, z)), TUFT))
+        tris.append((((x + dx, 0.0, z + dz), (x - dx, 0.0, z - dz), (x + dz * 0.5, h * 0.8, z - dx * 0.5)), TUFT))
+    for _ in range(50):
+        x, z = rnd.uniform(-half + 5, half - 5), rnd.uniform(-half + 5, half - 5)
+        r = rnd.uniform(0.12, 0.25)
+        top = (x, r * 0.8, z)
+        base = [(x + math.sin(k * 2.1) * r, 0.0, z + math.cos(k * 2.1) * r) for k in range(3)]
+        shade = tuple(int(v * rnd.uniform(0.85, 1.1)) for v in PEBBLE)
+        for k in range(3):
+            tris.append(((base[k], base[(k + 1) % 3], top), shade))
     return tris
 
 
@@ -563,6 +621,7 @@ MODELS = {
     "rock_b": lambda: rock(23, ROCK_B, 2.4),
     "rock_c": lambda: rock(37, ROCK_C, 1.0),
     "ground": arena_floor,
+    "shadow": shadow,
 }
 
 # ---------------------------------------------------------------------------
@@ -651,11 +710,13 @@ def build_glb(name, model):
     positions, normals, colors, joints = [], [], [], []
     for (p0, p1, p2), col, bone, group in tris:
         face = v_norm(v_cross(v_sub(p1, p0), v_sub(p2, p0)))
-        lin = [srgb_to_linear(c) for c in col[:3]] + [col[3] / 255.0 if len(col) > 3 else 1.0]
-        for p in (p0, p1, p2):
+        # A colour per triangle, or (c0, c1, c2) per vertex.
+        per_vertex = isinstance(col[0], (tuple, list))
+        for k, p in enumerate((p0, p1, p2)):
+            c = col[k] if per_vertex else col
             positions.append(p)
             normals.append(v_norm(smooth[key(p, group)]) if group >= 0 else face)
-            colors.append(lin)
+            colors.append([srgb_to_linear(v) for v in c[:3]] + [c[3] / 255.0 if len(c) > 3 else 1.0])
             joints.append(bone)
     count = len(positions)
     if count > 65535:

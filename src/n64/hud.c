@@ -4,6 +4,7 @@
 #include "mission.h"
 #include "overlay.h"
 #include "render.h"
+#include "ui.h"
 #include "weapons.h"
 
 #include <libdragon.h>
@@ -227,8 +228,8 @@ static void squad_notice(const sim_t *sim)
 }
 
 // Each person's control scheme (A on the pause screen switches it), the
-// controls, and how to join.
-static void pause_screen(const sim_t *sim)
+// controls, how to join, and holding B to quit.
+static void pause_screen(const sim_t *sim, int quit)
 {
     char schemes[96];
     int at = snprintf(schemes, sizeof(schemes), "CONTROLS");
@@ -237,9 +238,9 @@ static void pause_screen(const sim_t *sim)
             at += snprintf(schemes + at, sizeof(schemes) - (size_t)at, "   ^%02XP%d %c^00", STYLE_P1 + i, i + 1,
                            sim->settings.scheme[i] == SCHEME_B ? 'B' : 'A');
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_TITLE },
-                     FONT, 0, 58, "PAUSED");
+                     FONT, 0, 50, "PAUSED");
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .line_spacing = 11 - FONT_LINE_H },
-                     FONT, 0, 74,
+                     FONT, 0, 66,
                      "%s\n"
                      "^%02XA: SWITCH YOUR CONTROLS^00\n"
                      "\n"
@@ -249,15 +250,18 @@ static void pause_screen(const sim_t *sim)
                      "Z DIVE\n"
                      "BOTH: B TAP RELOAD  B HOLD SWITCH WEAPON\n"
                      "HOLD R + C-BUTTONS: CALLDOWN CODE\n"
-                     "\n"
                      "START ON ANOTHER CONTROLLER: JOIN\n"
-                     "L+DDOWN DEBUG MENU   L+DUP STATS",
-                     schemes, STYLE_DIM);
+                     "L+DDOWN DEBUG MENU   L+DUP STATS\n"
+                     "^%02XHOLD B: QUIT TO TITLE^00",
+                     schemes, STYLE_DIM, quit ? STYLE_WARN : STYLE_DIM);
+    if (quit)
+        ui_progress(110, 191, 100, (float)quit / 100.0f);
 }
 
-void hud_draw(const sim_t *sim, bool paused, uint8_t connected)
+void hud_draw(const sim_t *sim, bool paused, uint8_t connected, int quit)
 {
-    player_panels(sim, connected);
+    if (!mission_over(sim)) // the results cover the bottom of the screen
+        player_panels(sim, connected);
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 296, .align = ALIGN_RIGHT }, FONT, 12, 16,
                      "^%02XREINF %u^00     WAVE %u  KILLS %lu  BUGS %u",
                      sim->reinforcements ? STYLE_NORMAL : STYLE_WARN, sim->reinforcements,
@@ -273,5 +277,5 @@ void hud_draw(const sim_t *sim, bool paused, uint8_t connected)
         code_panel(sim, i);
     squad_notice(sim);
     if (paused)
-        pause_screen(sim);
+        pause_screen(sim, quit);
 }

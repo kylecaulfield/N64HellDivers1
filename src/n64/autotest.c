@@ -6,6 +6,7 @@
 
 #include "calldown.h"
 #include "mission.h"
+#include "save.h"
 
 // Phases, in rendered frames (~30 per second).
 #define F_WALK        60
@@ -47,6 +48,8 @@ static uint32_t m3_kills;
 static unsigned m3_wave, m3_reinforcements;
 static bool scheme_switched, p2_pod, p4_took_over, p4_left, p2_next_mission;
 static uint32_t p2_shots;
+static uint16_t fe_seen;     // bit per screen passed through
+static bool initials_saved;
 
 static int nearest_enemy(const sim_t *sim, vec2 from)
 {
@@ -132,17 +135,86 @@ static void p2_script(sim_input_t *q, const sim_t *sim, vec2 dest)
     }
 }
 
-void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
+// The first mission, on its own clock (frames since it began).
+static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p2_plugged, bool p4_plugged);
+
+void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf, uint32_t mf)
 {
     // Controllers 2 and 4 are "plugged in" by the script for the M5 part.
-    static bool p2_plugged, p4_plugged;
+    static bool p2_plugged, p4_plugged, first_done;
+    static uint32_t frame;
+    (void)mf;
     sim_input_t *p = &in->ports[0];
     *p = (sim_input_t){ .connected = true };
-    sim_input_t *p2 = &in->ports[1], *p4 = &in->ports[3];
-    *p2 = (sim_input_t){ .connected = p2_plugged };
-    *p4 = (sim_input_t){ .connected = p4_plugged };
+    in->ports[1] = (sim_input_t){ .connected = p2_plugged };
+    in->ports[2] = (sim_input_t){ 0 };
+    in->ports[3] = (sim_input_t){ .connected = p4_plugged };
     in->pressed_any = 0;
     in->toggle_menu = false;
+    fe_seen |= (uint16_t)(1u << screen);
+    static int last_screen = -1;
+    static const char *const NAMES[] = {
+        "splash", "title", "menu", "options", "credits", "high scores", "briefing", "mission", "initials",
+    };
+    if ((int)screen != last_screen) {
+        debugf("AUTOTEST front end: %s\n", NAMES[screen]);
+        last_screen = (int)screen;
+    }
+
+    switch (screen) {
+    case SCREEN_SPLASH:
+        if (sf == 30)
+            p->pressed = SIM_BTN_START;
+        break;
+    case SCREEN_TITLE:
+        if (sf == 60)
+            p->pressed = SIM_BTN_START;
+        break;
+    case SCREEN_MENU:
+        if (sf == 20)
+            p->pressed = SIM_BTN_A; // DEPLOY
+        break;
+    case SCREEN_BRIEFING:
+        if (sf == 45)
+            p->pressed = SIM_BTN_START;
+        break;
+    case SCREEN_INITIALS:
+        // Up once on the first letter, then START: "BAA".
+        if (sf == 10)
+            p->held = SIM_BTN_DUP;
+        if (sf == 30)
+            p->pressed = SIM_BTN_START;
+        break;
+    case SCREEN_SCORES:
+        if (sf == 5)
+            for (int i = 0; i < HISCORE_COUNT; i++)
+                initials_saved |= save_scores()->entries[i].initials[0] == 'B' &&
+                                  save_scores()->entries[i].initials[1] == 'A';
+        if (sf == 60)
+            p->pressed = SIM_BTN_START; // next mission
+        break;
+    case SCREEN_MISSION:
+        if (!first_done) {
+            mission_script(in, frame++, sim, p2_plugged, p4_plugged);
+            p2_plugged = in->ports[1].connected;
+            p4_plugged = in->ports[3].connected;
+            first_done = results_frame && frame > results_frame + 100;
+        } else {
+            mission_script(in, frame, sim, p2_plugged, p4_plugged); // the checks at the end
+        }
+        break;
+    default:
+        break;
+    }
+    in->pressed_any |= in->ports[0].pressed | in->ports[1].pressed | in->ports[3].pressed;
+}
+
+static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p2_plugged, bool p4_plugged)
+{
+    sim_input_t *p = &in->ports[0];
+    sim_input_t *p2 = &in->ports[1], *p4 = &in->ports[3];
+    (void)p2_plugged;
+    (void)p4_plugged;
 
     const player_t *me = &sim->players[0];
     int target = nearest_enemy(sim, me->pos);
@@ -240,7 +312,7 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
         if (frame == F_JOIN) {
             phase(frame, "bots off; controller 2 plugs in and joins by pod", sim);
             sim_set_bots(sim, false);
-            p2_plugged = p2->connected = true;
+            p2->connected = true;
             p2->pressed = SIM_BTN_START;
         }
         p2_pod |= sim->players[1].state == PSTATE_DROPPING && !sim->players[1].bot;
@@ -250,12 +322,12 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
         if (frame == F_TAKEOVER) {
             phase(frame, "bots on; controller 4 joins, taking over its bot, then unplugs", sim);
             sim_set_bots(sim, true);
-            p4_plugged = p4->connected = true;
+            p4->connected = true;
             p4->pressed = SIM_BTN_START;
         } else if (frame == F_TAKEOVER + 2) {
             p4_took_over = !sim->players[3].bot && (sim->humans & 8);
         } else if (frame == F_TAKEOVER + 30) {
-            p4_plugged = p4->connected = false; // leaves after a second: a bot carries on
+            p4->connected = false; // leaves after a second: a bot carries on
         } else if (frame == F_TAKEOVER + 40) {
             phase(frame, "P1 and P2 hold R: two calldown panels", sim);
         } else if (frame == F_MISSION - 1) {
@@ -275,11 +347,11 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
             m3_reinforcements = sim->reinforcements;
         }
         if (mission_over(sim)) {
-            // Results screen: look at it for 2 s, then START.
+            // Results screen: look at it, then START.
             if (!results_frame) {
                 results_frame = frame;
                 phase(frame, sim->mission.phase == MISSION_SUCCESS ? "results: success" : "results: failed", sim);
-            } else if (frame == results_frame + 60) {
+            } else if (frame == results_frame + 100) { // after the dropship has gone
                 p->pressed = SIM_BTN_START;
             }
         } else if (m->phase == MISSION_EXTRACT && mission_can_call_extraction(sim, 0)) {
@@ -326,19 +398,21 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
         bool m4 = zones_captured == MISSION_ZONES && hold_seen && success_seen && extracted >= 1 && new_mission &&
                   !mission_over(sim);
         bool m5 = scheme_switched && p2_pod && p2_shots > 0 && p4_took_over && p4_left && p2_next_mission;
+        const uint16_t path = 1u << SCREEN_SPLASH | 1u << SCREEN_TITLE | 1u << SCREEN_MENU | 1u << SCREEN_BRIEFING |
+                              1u << SCREEN_MISSION | 1u << SCREEN_INITIALS | 1u << SCREEN_SCORES;
+        bool m6 = (fe_seen & path) == path && initials_saved;
         debugf("AUTOTEST %s: kills %lu, shots %lu, shotgun %d, wave %u, throws %lu, mg %d, turret shots %lu, "
                "bombs %lu, shells %lu, pickups %lu, reinforced p1 %d bot %d, reinforcements %u | mission: "
                "zones %lu, hold %d, success %d, extracted %lu, results at frame %lu, new mission %d | players: "
-               "scheme switch %d, p2 pod %d, p2 shots %lu, p4 takeover %d, p4 left %d, p2 next mission %d, "
-               "dropped ticks see STATS\n",
-               m3 && m4 && m5 ? "PASS" : "FAIL", (unsigned long)m3_kills, (unsigned long)shots_seen, shotgun_seen,
+               "scheme switch %d, p2 pod %d, p2 shots %lu, p4 takeover %d, p4 left %d, p2 next mission %d | "
+               "front end: screens %03x, initials saved %d, dropped ticks see STATS\n",
+               m3 && m4 && m5 && m6 ? "PASS" : "FAIL", (unsigned long)m3_kills, (unsigned long)shots_seen, shotgun_seen,
                m3_wave, (unsigned long)throws, mg_seen, (unsigned long)turret_shots, (unsigned long)bombs,
                (unsigned long)shells, (unsigned long)pickups, p1_reinforced, bot_reinforced, m3_reinforcements,
                (unsigned long)zones_captured, hold_seen, success_seen, (unsigned long)extracted,
                (unsigned long)results_frame, new_mission, scheme_switched, p2_pod, (unsigned long)p2_shots,
-               p4_took_over, p4_left, p2_next_mission);
+               p4_took_over, p4_left, p2_next_mission, fe_seen, initials_saved);
     }
-    in->pressed_any |= p->pressed | p2->pressed | p4->pressed;
 }
 
 void autotest_observe(const sim_t *sim)

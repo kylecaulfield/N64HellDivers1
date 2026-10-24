@@ -2,3 +2,5 @@
 /.toolchain/
 /logs/
 *.z64
+__pycache__/
+*.eeprom

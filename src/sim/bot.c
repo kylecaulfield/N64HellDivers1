@@ -31,6 +31,15 @@ static bool teammate_in_line(const sim_t *s, int idx, vec2 from, vec2 to)
     return false;
 }
 
+// The next zone not yet held, then the LZ.
+static vec2 next_objective(const sim_t *s)
+{
+    for (int z = 0; z < MISSION_ZONES; z++)
+        if (!s->mission.zones[z].captured)
+            return s->arena.zones[z];
+    return s->arena.lz;
+}
+
 player_intent_t bot_intent(const sim_t *s, int idx)
 {
     player_intent_t out = {0};
@@ -52,12 +61,14 @@ player_intent_t bot_intent(const sim_t *s, int idx)
     }
 
     // Formation spot around player 1 (or the camera if player 1 is down).
-    // Once the dropship is down, the middle of the LZ: they head there
-    // whatever is chasing them, shooting on the way.
+    // A bot playing port 1 itself (the title screen's demo) leads: it heads
+    // for the next zone to hold, then the LZ. Once the dropship is down,
+    // everyone heads for the middle of the LZ whatever is chasing them,
+    // shooting on the way.
     static const vec2 SLOT[SIM_MAX_PLAYERS] = { { 0, 0 }, { -3, -2 }, { 3, -2 }, { 0, -4 } };
     bool boarding = s->mission.phase == MISSION_BOARDING;
     vec2 leader = sim_player_alive(&s->players[0]) ? s->players[0].pos : s->camera.target;
-    vec2 spot = boarding ? s->arena.lz : v2_add(leader, SLOT[idx]);
+    vec2 spot = boarding ? s->arena.lz : idx == 0 ? next_objective(s) : v2_add(leader, SLOT[idx]);
     vec2 to_spot = v2_sub(spot, me->pos);
 
     if (target >= 0) {

@@ -159,6 +159,17 @@
 #define HOLD_WAVE_SPEEDUP    3       // during the hold, wave breaks and group intervals are this much shorter
 #define QUICK_MISSION_DIV    5       // debug: quick mission divides capture and hold times
 
+// --- Score ---
+#define SCORE_KILL_SKITTER   10
+#define SCORE_KILL_GNASHER   25
+#define SCORE_KILL_BULWARK   60
+#define SCORE_ZONE           500     // per zone held
+#define SCORE_EXTRACTED      2000    // the dropship got away
+#define SCORE_ABOARD         500     // per trooper on it
+#define SCORE_PAR_SECONDS    600     // a successful mission scores time bonus below this
+#define SCORE_PER_SECOND     5       // ...per second under par
+#define SCORE_REINFORCEMENT  250     // taken off per reinforcement used
+
 // --- Bots (stress-test stand-ins for players 2-4) ---
 #define BOT_ENGAGE_RANGE     18.0f
 #define BOT_KITE_RANGE       4.0f

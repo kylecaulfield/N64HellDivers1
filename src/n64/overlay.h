@@ -45,6 +45,8 @@ bool overlay_is_visible(void);
 // Snapshot the heap usage; any growth after this point is flagged, because
 // gameplay must not allocate. Call once loading is finished.
 void overlay_set_heap_baseline(void);
+// Stop watching (outside gameplay the screens load and free things).
+void overlay_clear_heap_baseline(void);
 // Record this frame's numbers; logs the stats line once per second.
 void overlay_record(const frame_timing_t *t, const sim_t *sim, const tickclock_t *clock);
 // Draw into the currently attached framebuffer (call after the 3D scene).

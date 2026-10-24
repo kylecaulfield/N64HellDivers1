@@ -30,12 +30,12 @@
 enum {
     MDL_SOLDIER, MDL_SKITTER, MDL_GNASHER, MDL_BULWARK,
     MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND,
-    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_DROPSHIP, MDL_COUNT
+    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_DROPSHIP, MDL_SHADOW, MDL_COUNT
 };
 
 static const char *const model_names[MDL_COUNT] = {
     "soldier", "skitter", "gnasher", "bulwark", "rock_a", "rock_b", "rock_c", "ground",
-    "beacon", "turret", "crate", "mgcase", "pod", "dropship",
+    "beacon", "turret", "crate", "mgcase", "pod", "dropship", "shadow",
 };
 
 // What falls from orbit for each calldown (-1: nothing, it is a strike), and
@@ -68,12 +68,16 @@ static struct {
 static render_stats_t stats;
 
 #define MODEL_SCALE (WORLD_SCALE / 64.0f)
-#define MAX_PROPS (SIM_MAX_BEACONS * 2 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS + SIM_MAX_PLAYERS + 1)
+// Beacons with their drops and the drops' shadows, turrets, pickups,
+// troopers' shadows, pods with theirs, the dropship with its.
+#define MAX_PROPS (SIM_MAX_BEACONS * 3 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS + SIM_MAX_PLAYERS * 3 + 2)
 #define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES + MAX_PROPS)
 #define TELEGRAPH_DOTS 16
 #define MAX_PARTICLES (SIM_MAX_PROJECTILES * 2 + FX_MAX + SIM_MAX_PLAYERS * 3 + \
                        SIM_MAX_BEACONS * (4 + TELEGRAPH_DOTS) + SIM_MAX_STRIKES * TELEGRAPH_DOTS + \
-                       SIM_MAX_PICKUPS + (MISSION_ZONES + 1) * (TELEGRAPH_DOTS + 9) + 4)
+                       SIM_MAX_PICKUPS + (MISSION_ZONES + 1) * (TELEGRAPH_DOTS + 9) + \
+                       SIM_MAX_PLAYERS * 3 + SIM_MAX_BEACONS * 2 + ENGINE_GLOWS + 4)
+#define ENGINE_GLOWS 4
 #define PARTICLE_PAIRS (MAX_PARTICLES / 2)
 #define CULL_PAD 2.0f
 
@@ -93,6 +97,8 @@ static rspq_block_t *soldier_material;
                                      (COMBINED, 0, SHADE, 0), (0, 0, 0, 1))
 static T3DViewport viewport;
 static int frame_idx;
+static uint32_t frame_count;      // rendered frames, for visual-only animation
+static uint32_t success_frames;   // since the mission succeeded: the dropship lifts off
 
 // Uncached: the RSP DMAs these.
 static T3DMat4FP *static_mats;    // [0] = floor, [1..] = rocks
@@ -121,13 +127,20 @@ static void unit_matrix(T3DMat4FP *out, vec2 pos, float lift, vec2 facing, float
     t3d_mat4_to_fixed(out, &m);
 }
 
-void render_init(void)
+int render_model_count(void)
+{
+    return MDL_COUNT;
+}
+
+void render_init(void (*progress)(void))
 {
     tpx_init((TPXInitParams){});
     for (int i = 0; i < MDL_COUNT; i++) {
         char path[64];
         snprintf(path, sizeof(path), "rom:/models/%s.t3dm", model_names[i]);
         models[i] = t3d_model_load(path);
+        if (progress)
+            progress();
         bool skinned = i <= MDL_BULWARK;
         int objects = 0;
         T3DModelIter it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
@@ -363,6 +376,74 @@ static void build_mission(const sim_t *sim, pbuild_t *pb)
         site_marker(sim, pb, sim->arena.lz, lz);
 }
 
+// A blob shadow (a flat dark disc) of `radius` metres at `pos`.
+static int add_shadow(T3DMat4FP *dyn, int n, int first, vec2 pos, float radius)
+{
+    prop_model[n - first] = MDL_SHADOW;
+    unit_matrix(&dyn[n], pos, 0.04f, v2(0.0f, 1.0f), 0.0f, radius);
+    return n + 1;
+}
+
+// The dropship's height above the LZ, or -1 when it isn't there: coming down
+// at the end of the hold, on the ground while the squad boards, then lifting
+// off (accelerating) a moment after the mission succeeds.
+static float dropship_lift(const sim_t *sim)
+{
+    const mission_t *m = &sim->mission;
+    if (m->phase == MISSION_HOLD && m->timer <= DROPSHIP_DESCENT) {
+        float k = (float)m->timer / DROPSHIP_DESCENT;
+        return 30.0f * k * k;
+    }
+    if (m->phase == MISSION_BOARDING)
+        return 0.0f;
+    if (m->phase == MISSION_SUCCESS) {
+        float f = success_frames > 20 ? (float)(success_frames - 20) : 0.0f;
+        return 0.012f * f * f;
+    }
+    return -1.0f;
+}
+
+// Smoke trailing the pods coming down at the start, and the drops falling
+// onto beacons.
+static void build_trails(const sim_t *sim, pbuild_t *pb)
+{
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!p->active || p->state != PSTATE_DROPPING)
+            continue;
+        float k = (float)p->state_timer / DROP_IN_TICKS;
+        float h = 40.0f * k * k;
+        for (int s = 0; s < 3 && h > 1.0f; s++) {
+            uint8_t v = (uint8_t)(170 - 30 * s);
+            pb_add(pb, p->pos.x, h + 1.6f + 1.6f * (float)s, -p->pos.y, 22 + 8 * s, v, v, v);
+        }
+    }
+    for (int i = 0; i < SIM_MAX_BEACONS; i++) {
+        const beacon_t *b = &sim->beacons[i];
+        if (!b->active || b->state != BEACON_ARMED || drop_model[b->type] < 0 || b->timer > DROP_TICKS)
+            continue;
+        float k = (float)b->timer / DROP_TICKS;
+        float h = 25.0f * k * k;
+        for (int s = 0; s < 2 && h > 1.0f; s++)
+            pb_add(pb, b->pos.x, h + 1.5f + 1.5f * (float)s, -b->pos.y, 20 + 8 * s, 160, 160, 160);
+    }
+}
+
+// The dropship's engines glow while it comes down and lifts off.
+static void build_engines(const sim_t *sim, pbuild_t *pb)
+{
+    float lift = dropship_lift(sim);
+    if (lift < 0.3f || lift >= 45.0f)
+        return;
+    vec2 lz = sim->arena.lz;
+    for (int k = 0; k < ENGINE_GLOWS; k++) {
+        float side = (k & 1) ? 1.4f : -1.4f;
+        float fore = (k & 2) ? 1.2f : -1.8f;
+        int flicker = (int)((frame_count + (uint32_t)k * 3) % 4);
+        pb_add(pb, lz.x + side, lift - 0.2f, -(lz.y + fore), 22 + 4 * flicker, 255, 170 + 15 * flicker, 70);
+    }
+}
+
 // Opaque particles from index 0, then (from *glow_start, an even index) the
 // semi-transparent ones. Returns the opaque count.
 static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec2 vmax,
@@ -398,12 +479,14 @@ static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec
 
     build_calldowns(sim, &pb);
     build_mission(sim, &pb);
+    build_trails(sim, &pb);
 
     const fx_particle_t *fx = fx_particles();
     for (int pass = 0; pass < 2; pass++) {
         if (pass == 1) {
             pb_pad(&pb);
             *glow_start = pb.count;
+            build_engines(sim, &pb);
         }
         for (int i = 0; i < FX_MAX; i++) {
             const fx_particle_t *f = &fx[i];
@@ -441,6 +524,7 @@ static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 
             float k = (float)b->timer / DROP_TICKS;
             prop_model[n - first] = (uint8_t)drop_model[b->type];
             unit_matrix(&dyn[n++], b->pos, 25.0f * k * k, b->dir, 0.0f, 1.0f);
+            n = add_shadow(dyn, n, first, b->pos, 0.7f * (1.0f - 0.6f * k));
         }
     }
     for (int i = 0; i < SIM_MAX_TURRETS; i++) {
@@ -457,22 +541,29 @@ static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 
         prop_model[n - first] = k->type == PICKUP_RESUPPLY ? MDL_CRATE : MDL_MGCASE;
         unit_matrix(&dyn[n++], k->pos, 0.0f, v2(0.0f, 1.0f), 0.0f, 1.0f);
     }
-    // The squad's pods coming down at the start of the mission.
+    // The squad's pods coming down at the start of the mission, and every
+    // trooper's shadow (their models pitch flat when diving, so it is a
+    // separate disc).
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const player_t *p = &sim->players[i];
-        if (!p->active || p->state != PSTATE_DROPPING)
+        if (!sim_player_alive(p))
             continue;
+        if (p->state != PSTATE_DROPPING) {
+            n = add_shadow(dyn, n, first, p->pos, 0.45f);
+            continue;
+        }
         float k = (float)p->state_timer / DROP_IN_TICKS;
         prop_model[n - first] = MDL_POD;
         unit_matrix(&dyn[n++], p->pos, 40.0f * k * k, v2(0.0f, 1.0f), 0.0f, 1.0f);
+        n = add_shadow(dyn, n, first, p->pos, 0.8f * (1.0f - 0.6f * k));
     }
-    // The dropship: descending at the end of the hold, then down on the LZ.
-    const mission_t *m = &sim->mission;
-    bool landing = m->phase == MISSION_HOLD && m->timer <= DROPSHIP_DESCENT;
-    if (landing || m->phase == MISSION_BOARDING || m->phase == MISSION_SUCCESS) {
-        float k = landing ? (float)m->timer / DROPSHIP_DESCENT : 0.0f;
+    // The dropship: descending at the end of the hold, down on the LZ, then
+    // lifting off once everyone is aboard.
+    float lift = dropship_lift(sim);
+    if (lift >= 0.0f && lift < 45.0f) {
         prop_model[n - first] = MDL_DROPSHIP;
-        unit_matrix(&dyn[n++], sim->arena.lz, 30.0f * k * k, v2(0.0f, 1.0f), 0.0f, 1.0f);
+        unit_matrix(&dyn[n++], sim->arena.lz, lift, v2(0.0f, 1.0f), 0.0f, 1.0f);
+        n = add_shadow(dyn, n, first, sim->arena.lz, 3.4f * (1.0f - fminf(0.7f, lift / 40.0f)));
     }
     return n;
 }
@@ -518,14 +609,23 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     T3DMat4FP *dyn = &dynamic_mats[frame_idx * MAX_DYNAMIC];
     TPXParticleS16 *pbuf = &particles[frame_idx * PARTICLE_PAIRS];
 
+    frame_count++;
+    success_frames = sim->mission.phase == MISSION_SUCCESS ? success_frames + 1 : 0;
+
     // Camera from the sim: looking north, pitched down, `dist` from target,
-    // plus any explosion shake (visual only, the sim never sees it).
-    const camera_t *cam = &sim->camera;
+    // plus any explosion shake (visual only, the sim never sees it). While
+    // the squad drops in it starts high and swoops down with the pods.
+    camera_t view = sim->camera;
+    if (sim->mission.phase == MISSION_DROP) {
+        float k = (float)sim->mission.timer / DROP_IN_TICKS;
+        view.dist += 28.0f * k * k;
+    }
+    const camera_t *cam = &view;
     float h = fm_sinf(CAM_PITCH_RAD) * cam->dist, back = fm_cosf(CAM_PITCH_RAD) * cam->dist;
     vec2 look = v2_add(cam->target, fx_shake());
     T3DVec3 target = {{ look.x * WORLD_SCALE, 0.0f, -look.y * WORLD_SCALE }};
     T3DVec3 eye = {{ target.v[0], h * WORLD_SCALE, target.v[2] + back * WORLD_SCALE }};
-    t3d_viewport_set_projection(&viewport, CAM_FOV_Y_RAD, 2.0f * WORLD_SCALE, 70.0f * WORLD_SCALE);
+    t3d_viewport_set_projection(&viewport, CAM_FOV_Y_RAD, 2.0f * WORLD_SCALE, 100.0f * WORLD_SCALE);
     t3d_viewport_look_at(&viewport, &eye, &target, &(T3DVec3){{ 0.0f, 1.0f, 0.0f }});
 
     vec2 vmin, vmax;

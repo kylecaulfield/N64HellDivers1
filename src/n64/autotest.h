@@ -7,16 +7,21 @@
 // menu, pausing and switching schemes, every calldown, picking up the
 // machine gun and a resupply, dying, bots reinforcing each other, a quick
 // mission through to the results screen and the next mission), and plugs in
-// controllers 2 and 4 to join, fight and leave, so a ROM can be exercised
-// in ares with no controller. Logs "AUTOTEST PASS/FAIL" with a summary.
+// controllers 2 and 4 to join, fight and leave. Around that it goes through
+// the front end: splash, title, menu, briefing, initials for the high score
+// and the table. So a ROM can be exercised in ares with no controller. Logs
+// "AUTOTEST PASS/FAIL" with a summary.
 
 #include <stdint.h>
 
+#include "frontend.h"
 #include "input.h"
 #include "sim.h"
 
-// Overwrite this frame's input with the script. `frame` counts rendered frames.
-void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim);
+// Overwrite this frame's input with the script, which follows the screens:
+// `screen_frames` counts frames on the current one, `mission_frames` frames
+// into the current mission.
+void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t screen_frames, uint32_t mission_frames);
 // Look at what the sim did this frame (call before its events are cleared).
 void autotest_observe(const sim_t *sim);
 

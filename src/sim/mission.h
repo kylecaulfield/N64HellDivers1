@@ -31,4 +31,15 @@ void mission_complete_objective(sim_t *s);
 // The squad's stats: every port's added up.
 player_stats_t mission_squad_stats(const mission_stats_t *st);
 
+// The mission's score and where it came from (see SCORE_* in tuning.h).
+typedef struct {
+    int32_t kills;
+    int32_t zones;
+    int32_t extraction;      // the dropship got away, plus each trooper aboard
+    int32_t time;            // success only: under par
+    int32_t reinforcements;  // negative
+    int32_t total;           // never below 0
+} mission_score_t;
+mission_score_t mission_score(const sim_t *s);
+
 #endif

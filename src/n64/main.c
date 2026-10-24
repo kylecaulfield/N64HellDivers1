@@ -40,6 +40,17 @@ static void on_vblank(void *arg)
     vblank_count++;
 }
 
+// Spin until the VI interrupt has counted another vblank. Not
+// vi_wait_vblank: that polls for the one scanline the VI interrupt fires on,
+// so whenever the interrupt handlers outlast that line it misses every
+// vblank and never returns (seen in ares; whether it happens depends on
+// cache layout).
+static void wait_vblank(void)
+{
+    uint32_t v = vblank_count;
+    while (vblank_count == v) {}
+}
+
 // sim_step calls this at the start of each phase (and once at the end).
 static void on_sim_mark(void *ctx, sim_phase_t phase)
 {
@@ -88,7 +99,7 @@ int main(void)
     for (;;) {
         uint32_t ticks;
         while ((ticks = tickclock_advance(&clock, vblank_count)) == 0)
-            vi_wait_vblank();
+            wait_vblank();
 
         uint64_t t_start = get_ticks();
         uint32_t frame_us = (uint32_t)TICKS_TO_US(t_start - last_frame);

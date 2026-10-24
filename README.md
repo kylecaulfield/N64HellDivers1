@@ -29,7 +29,7 @@ flow field, a uniform grid, skinned bugs sharing pose slots, bots for players
 To move a pin: `git -C vendor/libdragon checkout <commit>`, commit the
 submodule change, update this table. The next `make` rebuilds the SDK.
 
-Known upstream issues at these pins (both handled, recheck when moving a pin):
+Known upstream issues at these pins (all handled, recheck when moving a pin):
 
 - libdragon's `magma.h` and `rdpq.h` trigger warnings under Tiny3D's
   `-Wextra -Wformat-signedness -Werror`. The build treats libdragon's headers
@@ -39,6 +39,13 @@ Known upstream issues at these pins (both handled, recheck when moving a pin):
   memory in several microcodes (`rsp_rdpq`, the audio mixer, ...), so there
   is no RSP-only timing; the overlay reports RDP busy time and GPU frame
   completion time instead.
+- `vi_wait_vblank()` waits for the scanline the VI interrupt fires on. When
+  the interrupt handlers (libdragon's display callback, with its lazy FPU
+  save, plus ours) take longer than that one line, it misses the vblank, and
+  it can keep missing every one: until M4 this showed up as occasional 50 ms
+  frames, and one M4 build hung outright. Which happens depends on cache
+  layout. The main loop never calls it; it spins until the VI interrupt's
+  own counter changes (`wait_vblank` in `src/n64/main.c`).
 
 ## Build
 
@@ -279,7 +286,8 @@ rom.mk          ROM build (called by the top-level Makefile)
 - **Fixed timestep locked to video.** The sim ticks once every 2 vblanks
   (~29.91 Hz on NTSC), counted from the VI interrupt, never from a wall clock.
   At most 2 catch-up ticks per frame; extra ones are dropped and counted.
-  All timers are in ticks.
+  All timers are in ticks. The loop waits on that interrupt counter, not on
+  `vi_wait_vblank()` (see the known upstream issues above).
 - **No allocation during gameplay.** Fixed pools for enemies, projectiles,
   particles and calldowns, allocated at load. The heap watchdog enforces it.
 - **Floats, not doubles.** The N64 build uses `-ffast-math`; host tests

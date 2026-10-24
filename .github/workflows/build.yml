@@ -1,0 +1,59 @@
+name: build
+
+# One run per change: pushes to main, and pull requests (which cover pushes
+# to their branches). Triggering on every push too would run twice per PR push.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: host unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+
+  rom:
+    name: ROM
+    runs-on: ubuntu-24.04
+    # The first run builds GCC from source (~1 h); later runs hit the cache.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0 # git describe stamps the build id into the ROM
+
+      - name: Install toolchain build dependencies
+        run: sudo apt-get update && sudo apt-get install -y texinfo bison flex zlib1g-dev
+
+      - name: Restore toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: .toolchain/inst
+          key: n64-toolchain-${{ runner.os }}-${{ hashFiles('vendor/libdragon/tools/build-toolchain.sh') }}
+
+      - name: Build toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: make toolchain
+
+      - name: Build ROM
+        run: make
+
+      - name: Build autotest ROM
+        run: make AUTOTEST=1
+
+      - name: Build bench ROM
+        run: make BENCH=1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hivebreakers-${{ github.sha }}
+          path: |
+            hivebreakers.z64
+            hivebreakers-autotest.z64
+            hivebreakers-bench.z64
+          if-no-files-found: error

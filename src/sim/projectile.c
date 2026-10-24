@@ -3,8 +3,30 @@
 #include "grid.h"
 #include "sim_internal.h"
 
+int sim_spawn_projectile(sim_t *s, uint8_t owner, uint8_t weapon, vec2 pos, vec2 dir,
+                         float speed, float range, float damage)
+{
+    for (int i = 0; i < SIM_MAX_PROJECTILES; i++) {
+        projectile_t *pr = &s->projectiles[i];
+        if (pr->active)
+            continue;
+        *pr = (projectile_t){
+            .active = true,
+            .owner = owner,
+            .weapon = weapon,
+            .damage = damage,
+            .pos = pos,
+            .vel = v2_scale(dir, speed),
+            .range = range,
+        };
+        return i;
+    }
+    return -1;
+}
+
 // Bullets move up to 2 m per tick, more than a bug is wide, so every step is
-// a swept segment test against everything it could hit.
+// a swept segment test against everything it could hit. Friendly fire is on:
+// players other than the shooter are targets too.
 static void update_one(sim_t *s, projectile_t *pr)
 {
     vec2 step = v2_scale(pr->vel, SIM_DT);
@@ -16,7 +38,7 @@ static void update_one(sim_t *s, projectile_t *pr)
     vec2 p0 = pr->pos, p1 = v2_add(p0, step);
 
     float best_t = 2.0f;
-    int hit_enemy = -1;
+    int hit_enemy = -1, hit_player = -1;
     bool hit_world = false;
 
     // Only bugs in grid cells the segment could touch.
@@ -42,10 +64,23 @@ static void update_one(sim_t *s, projectile_t *pr)
             hit_world = true;
         }
     }
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *pl = &s->players[i];
+        float t;
+        if (i != pr->owner && sim_player_alive(pl) &&
+            segment_circle(p0, p1, pl->pos, PLAYER_RADIUS, &t) && t < best_t) {
+            best_t = t;
+            hit_enemy = -1;
+            hit_world = false;
+            hit_player = i;
+        }
+    }
 
     if (best_t <= 1.0f) {
         vec2 at = v2_add(p0, v2_scale(step, best_t));
-        if (hit_enemy >= 0)
+        if (hit_player >= 0)
+            player_damage(s, hit_player, pr->damage);
+        else if (hit_enemy >= 0)
             enemy_damage(s, hit_enemy, pr->damage, at, v2_norm_or(step, v2(0.0f, 1.0f)));
         else if (hit_world)
             sim_push_event(s, EV_HIT_WORLD, 0, at, v2_norm_or(step, v2(0.0f, 1.0f)));

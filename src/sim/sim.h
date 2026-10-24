@@ -45,7 +45,7 @@ typedef struct {
 } sim_input_t;
 
 typedef enum { SCHEME_A, SCHEME_B, SCHEME_COUNT } control_scheme_t;
-typedef enum { WEAPON_RIFLE, WEAPON_SHOTGUN, WEAPON_COUNT } weapon_type_t;
+typedef enum { WEAPON_RIFLE, WEAPON_SHOTGUN, WEAPON_MACHINE_GUN, WEAPON_COUNT } weapon_type_t;
 typedef enum { ENEMY_SKITTER, ENEMY_GNASHER, ENEMY_BULWARK, ENEMY_TYPE_COUNT } enemy_type_t;
 
 // --- Players -----------------------------------------------------------------
@@ -58,12 +58,96 @@ typedef enum {
 } player_state_t;
 
 typedef struct {
+    bool     owned;    // empty slots are skipped when switching
     uint8_t  type;     // weapon_type_t
     uint8_t  mag;      // rounds in the magazine
     uint16_t reserve;  // rounds left to reload from
 } weapon_slot_t;
 
-#define PLAYER_WEAPON_SLOTS 2
+// Rifle, shotgun, and a support weapon slot filled by calldown pickups.
+#define PLAYER_WEAPON_SLOTS 3
+#define WEAPON_SLOT_SUPPORT 2
+
+// --- Calldowns -------------------------------------------------------------------
+
+typedef enum {
+    CALLDOWN_REINFORCE,
+    CALLDOWN_RESUPPLY,
+    CALLDOWN_MACHINE_GUN,
+    CALLDOWN_AIRSTRIKE,
+    CALLDOWN_BARRAGE,
+    CALLDOWN_SENTRY,
+    CALLDOWN_COUNT
+} calldown_type_t;
+
+// Code inputs: the C-buttons while R is held. 0 = no input.
+typedef enum { CODE_NONE, CODE_UP, CODE_DOWN, CODE_LEFT, CODE_RIGHT } code_input_t;
+#define CALLDOWN_CODE_MAX 6
+
+// A player's code entry in progress. A wrong input clears it; keep holding R
+// and start again.
+typedef struct {
+    bool    entering;                  // R was held last tick
+    uint8_t len;                       // inputs so far
+    uint8_t inputs[CALLDOWN_CODE_MAX];
+} code_entry_t;
+
+typedef enum {
+    SQUAD_FIGHTING,
+    SQUAD_DOWN,     // everyone is dead: emergency reinforce when squad_timer runs out
+    SQUAD_LOST,     // everyone is dead and no reinforcements are left
+} squad_state_t;
+
+typedef enum {
+    BEACON_FLYING,  // thrown, still travelling
+    BEACON_ARMED,   // on the ground, counting down the call-in delay
+} beacon_state_t;
+
+typedef struct {
+    bool     active;
+    uint8_t  type;   // calldown_type_t
+    uint8_t  owner;  // player index
+    uint8_t  state;  // beacon_state_t
+    uint16_t timer;  // flight ticks left, then call-in ticks left
+    vec2     pos;
+    vec2     vel;
+    vec2     dir;    // the thrower's facing (an airstrike flies along it)
+} beacon_t;
+
+// Explosions spread over time: an airstrike's bombs or a barrage's shells.
+typedef struct {
+    bool     active;
+    uint8_t  type;   // CALLDOWN_AIRSTRIKE or CALLDOWN_BARRAGE
+    uint8_t  owner;
+    uint8_t  done;   // explosions so far
+    uint16_t timer;  // ticks to the next one
+    vec2     center;
+    vec2     dir;
+} strike_t;
+
+typedef struct {
+    bool     active;
+    uint8_t  owner;
+    uint16_t ammo;
+    uint16_t life;           // ticks left
+    uint16_t fire_cooldown;
+    int16_t  target;         // enemy index, -1 = none
+    vec2     pos;
+    vec2     facing;
+} turret_t;
+
+typedef enum { PICKUP_RESUPPLY, PICKUP_MACHINE_GUN } pickup_type_t;
+
+typedef struct {
+    bool     active;
+    uint8_t  type;   // pickup_type_t
+    uint8_t  uses;   // players it can still serve
+    uint16_t life;   // ticks left
+    vec2     pos;
+} pickup_t;
+
+// Projectile owners: players 0-3, or a sentry turret.
+#define OWNER_TURRET 0x80   // | turret index
 
 typedef struct {
     bool     present;        // a controller is plugged into this port
@@ -81,6 +165,7 @@ typedef struct {
     uint16_t b_held;         // ticks B has been held (tap = reload, hold = switch)
     uint16_t dive_cooldown;
     bool     bot;            // driven by the sim's bot logic instead of a controller
+    code_entry_t code;       // calldown code being entered
 } player_t;
 
 // --- Enemies -------------------------------------------------------------------
@@ -111,7 +196,7 @@ typedef struct {
 
 typedef struct {
     bool    active;
-    uint8_t owner;   // player index
+    uint8_t owner;   // player index, or OWNER_TURRET | turret index
     uint8_t weapon;  // weapon_type_t
     float   damage;
     vec2    pos;
@@ -216,7 +301,20 @@ typedef enum {
     EV_PLAYER_DIED,   // a = player index
     EV_DRY_FIRE,      // a = player index (out of ammo)
     EV_RELOAD,        // a = player index
+    EV_EXPLOSION,     // pos = centre, a = blast_kind_t
+    EV_CODE_INPUT,    // a = player index (a code input was accepted)
+    EV_CODE_REJECTED, // a = player index (released R on no code / unavailable)
+    EV_BEACON_THROWN, // pos = thrower, dir = throw direction, a = calldown type
+    EV_CALLDOWN,      // pos = beacon, a = calldown type (it arrived)
+    EV_PICKUP,        // pos = pickup, a = pickup type
+    EV_REINFORCED,    // pos = drop point, a = player index
 } sim_event_type_t;
+
+typedef enum {
+    BLAST_IMPACT,   // something dropped from orbit landed
+    BLAST_BOMB,     // airstrike
+    BLAST_SHELL,    // orbital barrage
+} blast_kind_t;
 
 // EV_HIT_ENEMY: `a` = enemy type, plus this flag when armor absorbed the hit.
 #define EV_HIT_ARMORED 0x80
@@ -236,6 +334,7 @@ typedef struct {
     bool     infinite_ammo;
     bool     waves;                   // wave spawner on
     bool     force_max_zoom;          // stress testing: camera fully zoomed out
+    bool     free_calldowns;          // debug: no cooldowns
     uint16_t enemy_cap;               // <= SIM_MAX_ENEMIES
     uint16_t flow_budget;             // flow-field cells expanded per tick
 } sim_settings_t;
@@ -248,6 +347,7 @@ typedef enum {
     SIM_PHASE_ENEMIES,      // AI and movement
     SIM_PHASE_CROWD,        // separation, rock collision, grid rebuild
     SIM_PHASE_PROJECTILES,
+    SIM_PHASE_CALLDOWNS,    // beacons, strikes, turrets, pickups, reinforcements
     SIM_PHASE_SPAWN,
     SIM_PHASE_END,
     SIM_PHASE_COUNT
@@ -260,7 +360,7 @@ typedef struct {
     uint16_t enemies;
     uint16_t projectiles;
     uint16_t particles;   // filled in by the renderer (effects are visual only)
-    uint16_t calldowns;
+    uint16_t calldowns;   // beacons, strikes, turrets and pickups in play
 } sim_counts_t;
 
 typedef struct {
@@ -278,6 +378,14 @@ typedef struct {
     crowd_t        crowd;             // scratch for separation, see crowd_t
     flow_t         flow;
     waves_t        waves;
+    beacon_t       beacons[SIM_MAX_BEACONS];
+    strike_t       strikes[SIM_MAX_STRIKES];
+    turret_t       turrets[SIM_MAX_TURRETS];
+    pickup_t       pickups[SIM_MAX_PICKUPS];
+    uint16_t       cooldowns[SIM_MAX_PLAYERS][CALLDOWN_COUNT]; // kept through death
+    uint8_t        reinforcements;    // shared pool
+    uint8_t        squad;             // squad_state_t
+    uint16_t       squad_timer;       // SQUAD_DOWN / SQUAD_LOST countdown
     sim_event_t    events[SIM_MAX_EVENTS];
     uint16_t       event_count;       // cleared by the consumer, see sim_clear_events
     uint16_t       events_dropped;
@@ -288,6 +396,8 @@ typedef struct {
 } sim_t;
 
 void sim_init(sim_t *s, uint32_t seed);
+// A new mission with the same settings (and bots) as the current one.
+void sim_restart(sim_t *s, uint32_t seed);
 void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS]);
 
 // Events accumulate across ticks until the consumer clears them (the renderer
@@ -295,7 +405,7 @@ void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS]);
 void sim_clear_events(sim_t *s);
 
 // Spawning and debug helpers.
-void sim_spawn_player(sim_t *s, int port, vec2 pos);
+void sim_spawn_player(sim_t *s, int port, vec2 pos);   // keeps `present` and `bot`
 int  sim_spawn_enemy(sim_t *s, enemy_type_t type, vec2 pos);   // index or -1
 int  sim_spawn_enemies_around(sim_t *s, enemy_type_t type, int count, vec2 center);
 // Mixed swarm (half skitters, a third gnashers, the rest bulwarks) on a
@@ -303,6 +413,8 @@ int  sim_spawn_enemies_around(sim_t *s, enemy_type_t type, int count, vec2 cente
 int  sim_spawn_mix(sim_t *s, int count, vec2 center, float r_min, float r_max);
 void sim_kill_all_enemies(sim_t *s);
 void sim_refill_ammo(sim_t *s, int port);
+// Kills a player even in god mode (to test reinforcing).
+void sim_kill_player(sim_t *s, int port);
 // Bots take ports 2-4 (stress testing until real players join in M5).
 void sim_set_bots(sim_t *s, bool on);
 

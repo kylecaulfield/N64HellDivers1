@@ -13,7 +13,11 @@
 #define SIM_ENEMY_CAP_DEFAULT 64
 #define SIM_MAX_PROJECTILES  256
 #define SIM_MAX_OBSTACLES    32
-#define SIM_MAX_EVENTS       64
+#define SIM_MAX_EVENTS       192     // explosions can hit dozens of bugs in one tick
+#define SIM_MAX_BEACONS      8
+#define SIM_MAX_STRIKES      4
+#define SIM_MAX_TURRETS      4
+#define SIM_MAX_PICKUPS      8
 
 // --- Arena ---
 #define ARENA_HALF_SIZE      32.0f   // arena is a 64x64 m square centred on the origin
@@ -43,7 +47,6 @@
 #define PLAYER_DIVE_TICKS    SECONDS(0.4f)
 #define PLAYER_PRONE_TICKS   SECONDS(0.35f)
 #define PLAYER_DIVE_COOLDOWN SECONDS(1.0f)
-#define PLAYER_RESPAWN_TICKS SECONDS(3.0f)  // placeholder until Reinforce (M3)
 #define PLAYER_SWITCH_TICKS  SECONDS(0.3f)
 #define MUZZLE_OFFSET        0.6f
 
@@ -102,10 +105,50 @@
 #define BREACH_RING_MIN      18.0f   // breaches open this far from the camera target
 #define BREACH_RING_MAX      24.0f
 
+// --- Calldowns (codes, cooldowns and call-in delays are in calldown.c) ---
+#define REINFORCE_POOL       5       // shared reinforcements per mission
+#define BEACON_THROW_SPEED   12.0f
+#define BEACON_FLIGHT_TICKS  SECONDS(0.5f)  // so a throw lands ~6 m away
+#define DROP_TICKS           SECONDS(0.6f)  // the drop is visible falling for this long
+#define DROP_CRUSH_RADIUS    1.3f    // landing on something kills it, teammates included
+#define DROP_CRUSH_DAMAGE    500.0f
+#define SQUAD_REINFORCE_TICKS SECONDS(5.0f) // whole squad down: emergency reinforce after
+#define SQUAD_LOST_TICKS     SECONDS(5.0f)  // down with no reinforcements: restart after
+#define EXPLOSION_EDGE       0.5f    // fraction of a blast's damage at its edge
+
+#define AIRSTRIKE_BOMBS      5       // in a line along the thrower's facing
+#define AIRSTRIKE_SPACING    3.0f
+#define AIRSTRIKE_INTERVAL   3
+#define AIRSTRIKE_RADIUS     3.0f
+#define AIRSTRIKE_DAMAGE     300.0f
+
+#define BARRAGE_SHELLS       15      // at random inside the area, one every interval
+#define BARRAGE_INTERVAL     SECONDS(0.4f)
+#define BARRAGE_AREA         8.0f
+#define BARRAGE_RADIUS       2.5f
+#define BARRAGE_DAMAGE       250.0f
+
+#define SENTRY_RANGE         16.0f
+#define SENTRY_AMMO          200
+#define SENTRY_LIFE          SECONDS(45.0f)
+#define SENTRY_TURN          0.25f   // radians per tick
+#define SENTRY_AIM_TOLERANCE 0.12f   // fires when this close to the target's bearing
+#define SENTRY_FIRE_INTERVAL 3
+#define SENTRY_DAMAGE        15.0f
+#define SENTRY_SPEED         60.0f
+#define SENTRY_SPREAD        0.03f
+#define SENTRY_RETARGET      6       // ticks between target searches
+
+#define PICKUP_RADIUS        1.0f
+#define RESUPPLY_USES        4
+#define RESUPPLY_LIFE        SECONDS(60.0f)
+#define MG_PICKUP_LIFE       SECONDS(90.0f)
+
 // --- Bots (stress-test stand-ins for players 2-4) ---
 #define BOT_ENGAGE_RANGE     18.0f
 #define BOT_KITE_RANGE       4.0f
 #define BOT_FOLLOW_DIST      3.0f
+#define BOT_FF_CLEARANCE     0.6f    // a bot holds fire when a teammate is this close to its line
 
 // --- Camera (shared, fixed angle) ---
 #define CAM_PITCH_RAD        0.9599f // 55 degrees below horizontal

@@ -46,6 +46,17 @@ player_intent_t controls_read(control_scheme_t scheme, const sim_input_t *in, ui
 
     out.move = controls_stick(in->stick_x, in->stick_y);
     out.code_mode = (in->held & SIM_BTN_R) != 0;
+    if (out.code_mode) {
+        // One input per tick; two C-buttons in the same 33 ms is a fumble.
+        if (in->pressed & SIM_BTN_CUP)
+            out.code_input = CODE_UP;
+        else if (in->pressed & SIM_BTN_CDOWN)
+            out.code_input = CODE_DOWN;
+        else if (in->pressed & SIM_BTN_CLEFT)
+            out.code_input = CODE_LEFT;
+        else if (in->pressed & SIM_BTN_CRIGHT)
+            out.code_input = CODE_RIGHT;
+    }
     read_b(in, b_held, &out);
 
     if (scheme == SCHEME_A) {

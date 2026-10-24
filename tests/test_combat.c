@@ -146,20 +146,21 @@ void test_god_mode_blocks_damage(void)
     CHECK(sim_player_alive(&s.players[0]));
 }
 
-void test_player_death_and_placeholder_respawn(void)
+void test_dead_player_stays_down_while_a_teammate_lives(void)
 {
     sim_t s;
     setup_empty(&s);
+    sim_spawn_player(&s, 1, v2(3.0f, 0.0f)); // a human teammate who calls nothing
     player_damage(&s, 0, PLAYER_HP);
     CHECK(!sim_player_alive(&s.players[0]));
     CHECK_EQ_INT(count_events(&s, EV_PLAYER_DIED), 1);
     sim_input_t in[SIM_MAX_PLAYERS];
     inputs_none(in);
-    step_n(&s, in, PLAYER_RESPAWN_TICKS - 1);
-    CHECK(!sim_player_alive(&s.players[0]));
-    sim_step(&s, in);
-    CHECK(sim_player_alive(&s.players[0]));
-    CHECK_NEAR(s.players[0].hp, PLAYER_HP, 1e-6);
+    in[1].connected = true;
+    step_n(&s, in, SIM_HZ * 20);
+    CHECK(!sim_player_alive(&s.players[0])); // no respawn without a Reinforce
+    CHECK_EQ_INT(s.squad, SQUAD_FIGHTING);
+    CHECK_EQ_INT(s.reinforcements, REINFORCE_POOL);
 }
 
 void test_enemy_cap_is_enforced(void)

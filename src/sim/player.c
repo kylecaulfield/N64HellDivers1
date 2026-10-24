@@ -1,4 +1,5 @@
 #include "arena.h"
+#include "calldown.h"
 #include "camera.h"
 #include "collide.h"
 #include "enemy.h"
@@ -14,9 +15,10 @@ bool sim_player_alive(const player_t *p)
 void sim_spawn_player(sim_t *s, int port, vec2 pos)
 {
     player_t *p = &s->players[port];
-    bool present = p->present;
+    bool present = p->present, bot = p->bot;
     *p = (player_t){
         .present = present,
+        .bot = bot,
         .active = true,
         .state = PSTATE_NORMAL,
         .pos = pos,
@@ -31,7 +33,16 @@ void sim_refill_ammo(sim_t *s, int port)
 {
     player_t *p = &s->players[port];
     for (int i = 0; i < PLAYER_WEAPON_SLOTS; i++)
-        p->weapons[i] = weapon_slot_full((weapon_type_t)p->weapons[i].type);
+        if (p->weapons[i].owned)
+            p->weapons[i] = weapon_slot_full((weapon_type_t)p->weapons[i].type);
+}
+
+void sim_kill_player(sim_t *s, int port)
+{
+    bool god = s->settings.god_mode;
+    s->settings.god_mode = false;
+    player_damage(s, port, s->players[port].hp + 1.0f);
+    s->settings.god_mode = god;
 }
 
 void player_damage(sim_t *s, int idx, float amount)
@@ -42,27 +53,16 @@ void player_damage(sim_t *s, int idx, float amount)
     p->hp -= amount;
     sim_push_event(s, EV_PLAYER_HURT, (uint8_t)idx, p->pos, p->facing);
     if (p->hp <= 0.0f) {
+        // Down until a teammate's Reinforce (or the squad-down rule) brings
+        // them back; see calldown.c.
         p->hp = 0.0f;
         p->state = PSTATE_DEAD;
-        p->state_timer = PLAYER_RESPAWN_TICKS;
+        p->state_timer = 0;
         p->reload_timer = 0;
         p->vel = v2(0.0f, 0.0f);
+        p->code = (code_entry_t){0};
         sim_push_event(s, EV_PLAYER_DIED, (uint8_t)idx, p->pos, p->facing);
     }
-}
-
-static void update_dead(sim_t *s, int idx)
-{
-    player_t *p = &s->players[idx];
-    if (p->state_timer && --p->state_timer)
-        return;
-    // Placeholder until Reinforce (M3): respawn where the camera is looking.
-    bool present = p->present, bot = p->bot;
-    uint8_t weapon = p->weapon;
-    sim_spawn_player(s, idx, s->camera.target);
-    p->present = present;
-    p->bot = bot;
-    p->weapon = weapon;
 }
 
 static void update_one(sim_t *s, int idx, const player_intent_t *in)
@@ -75,7 +75,6 @@ static void update_one(sim_t *s, int idx, const player_intent_t *in)
     bool can_act = false;
     switch (p->state) {
     case PSTATE_DEAD:
-        update_dead(s, idx);
         return;
 
     case PSTATE_DIVING:
@@ -120,8 +119,9 @@ static void update_one(sim_t *s, int idx, const player_intent_t *in)
     }
     }
 
+    calldown_player_input(s, idx, in, can_act);
     weapon_update(s, idx,
-                  can_act && in->fire,
+                  can_act && in->fire && !in->code_mode,
                   can_act && in->reload,
                   can_act && in->switch_weapon,
                   p->facing);

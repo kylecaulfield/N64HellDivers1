@@ -37,7 +37,7 @@ OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 # --- Models -----------------------------------------------------------------
 # Every model has a generated placeholder. A file in assets/models/<name>.glb
 # (e.g. a Blender/Fast64 export) replaces it with no other changes.
-MODELS := soldier skitter gnasher bulwark dropship beacon turret rock_a rock_b rock_c ground
+MODELS := soldier skitter gnasher bulwark dropship beacon turret crate mgcase pod rock_a rock_b rock_c ground
 model_src = $(if $(wildcard assets/models/$(1).glb),assets/models/$(1).glb,$(GEN_DIR)/$(1).glb)
 MODEL_T3DM := $(MODELS:%=$(FS_DIR)/models/%.t3dm)
 

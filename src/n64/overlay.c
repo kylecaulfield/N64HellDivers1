@@ -7,14 +7,11 @@
 #include <stdio.h>
 
 #define FONT          FONT_BUILTIN_DEBUG_MONO
-#define STYLE_NORMAL  0
-#define STYLE_WARN    1
-#define STYLE_TITLE   2
 #define LOG_PERIOD    30 // frames between USB stats lines (~1 s)
 
 static struct {
     bool visible;
-    perfwin_t frame, cpu, sim, rdp, gpu, anim, build, submit;
+    perfwin_t frame, cpu, sim, rdp, gpu, anim, build, submit, hud;
     perfwin_t phase[TIMED_PHASES];
     uint16_t drawn, skeletons, wave;
     sim_counts_t counts;
@@ -59,6 +56,8 @@ void overlay_init(void)
     rdpq_font_t *font = rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO);
     rdpq_font_style(font, STYLE_WARN, &(rdpq_fontstyle_t){ .color = RGBA32(0xFF, 0x50, 0x40, 0xFF) });
     rdpq_font_style(font, STYLE_TITLE, &(rdpq_fontstyle_t){ .color = RGBA32(0xE8, 0x96, 0x28, 0xFF) });
+    rdpq_font_style(font, STYLE_DIM, &(rdpq_fontstyle_t){ .color = RGBA32(0x80, 0x80, 0x88, 0xFF) });
+    rdpq_font_style(font, STYLE_GOOD, &(rdpq_fontstyle_t){ .color = RGBA32(0x70, 0xF0, 0x80, 0xFF) });
     rdpq_text_register_font(FONT, font);
     ov.heap_baseline = -1;
     perfwin_reset(&ov.frame);
@@ -69,6 +68,7 @@ void overlay_init(void)
     perfwin_reset(&ov.anim);
     perfwin_reset(&ov.build);
     perfwin_reset(&ov.submit);
+    perfwin_reset(&ov.hud);
     for (int i = 0; i < TIMED_PHASES; i++)
         perfwin_reset(&ov.phase[i]);
 }
@@ -103,7 +103,7 @@ static void log_stats(void)
     fmt_ms(gpu, sizeof(gpu), ov.gpu.count ? perfwin_avg(&ov.gpu) : GPU_TIMING_NA);
     uint32_t fps100 = perfwin_avg(&ov.frame) ? 100000000u / perfwin_avg(&ov.frame) : 0;
     debugf("STATS t=%lu fps=%lu.%02lu frame_avg=%luus frame_max=%luus cpu_avg=%luus cpu_max=%luus "
-           "sim_avg=%luus ph=%s ren=%lu/%lu/%lu drawn=%u skel=%u rdp=%s gpu_done=%s drop=%lu "
+           "sim_avg=%luus ph=%s ren=%lu/%lu/%lu/%lu drawn=%u skel=%u rdp=%s gpu_done=%s drop=%lu "
            "ent=p%u/e%u/b%u/fx%u/cd%u wave=%u ram=%dK/%dK heap=%dK%s\n",
            (unsigned long)ov.tick,
            (unsigned long)(fps100 / 100), (unsigned long)(fps100 % 100),
@@ -111,7 +111,8 @@ static void log_stats(void)
            (unsigned long)perfwin_avg(&ov.cpu), (unsigned long)perfwin_max(&ov.cpu),
            (unsigned long)perfwin_avg(&ov.sim), ph,
            (unsigned long)perfwin_avg(&ov.anim), (unsigned long)perfwin_avg(&ov.build),
-           (unsigned long)perfwin_avg(&ov.submit), ov.drawn, ov.skeletons, rdp, gpu, (unsigned long)ov.dropped,
+           (unsigned long)perfwin_avg(&ov.submit), (unsigned long)perfwin_avg(&ov.hud),
+           ov.drawn, ov.skeletons, rdp, gpu, (unsigned long)ov.dropped,
            ov.counts.players, ov.counts.enemies, ov.counts.projectiles,
            ov.counts.particles, ov.counts.calldowns, ov.wave,
            m.used_kb, m.total_kb, m.heap_kb,
@@ -128,6 +129,7 @@ void overlay_record(const frame_timing_t *t, const sim_t *sim, const tickclock_t
     perfwin_push(&ov.anim, t->anim_us);
     perfwin_push(&ov.build, t->build_us);
     perfwin_push(&ov.submit, t->submit_us);
+    perfwin_push(&ov.hud, t->hud_us);
     ov.drawn = t->drawn_bugs;
     ov.skeletons = t->skeletons;
     ov.wave = sim->waves.number;
@@ -161,7 +163,7 @@ void overlay_draw(void)
 
     // Opaque backing box in fill mode: the cheapest way to keep text readable.
     rdpq_set_mode_fill(RGBA32(0, 0, 0, 0xFF));
-    rdpq_fill_rectangle(x - 4, y0 - 10, x + 292, y0 + 10 * lh - 4); // 10 lines
+    rdpq_fill_rectangle(x - 4, y0 - 10, x + 292, y0 + 11 * lh - 4); // 11 lines
 
     mem_stats_t m = mem_stats();
     uint32_t favg = perfwin_avg(&ov.frame);
@@ -181,14 +183,17 @@ void overlay_draw(void)
     fmt_ms(c, sizeof(c), perfwin_avg(&ov.sim));
     rdpq_text_printf(NULL, FONT, x, y, "CPU %s max %s sim %s", a, b, c);
     y += lh;
-    rdpq_text_printf(NULL, FONT, x, y, "SIM us pl%lu fl%lu en%lu cr%lu pr%lu sp%lu",
+    rdpq_text_printf(NULL, FONT, x, y, "SIM us pl%lu fl%lu en%lu cr%lu",
                      (unsigned long)perfwin_avg(&ov.phase[0]), (unsigned long)perfwin_avg(&ov.phase[1]),
-                     (unsigned long)perfwin_avg(&ov.phase[2]), (unsigned long)perfwin_avg(&ov.phase[3]),
-                     (unsigned long)perfwin_avg(&ov.phase[4]), (unsigned long)perfwin_avg(&ov.phase[5]));
+                     (unsigned long)perfwin_avg(&ov.phase[2]), (unsigned long)perfwin_avg(&ov.phase[3]));
     y += lh;
-    rdpq_text_printf(NULL, FONT, x, y, "REN us anim%lu build%lu sub%lu",
+    rdpq_text_printf(NULL, FONT, x, y, "       pr%lu cd%lu sp%lu",
+                     (unsigned long)perfwin_avg(&ov.phase[4]), (unsigned long)perfwin_avg(&ov.phase[5]),
+                     (unsigned long)perfwin_avg(&ov.phase[6]));
+    y += lh;
+    rdpq_text_printf(NULL, FONT, x, y, "REN us anim%lu build%lu sub%lu hud%lu",
                      (unsigned long)perfwin_avg(&ov.anim), (unsigned long)perfwin_avg(&ov.build),
-                     (unsigned long)perfwin_avg(&ov.submit));
+                     (unsigned long)perfwin_avg(&ov.submit), (unsigned long)perfwin_avg(&ov.hud));
     y += lh;
     rdpq_text_printf(NULL, FONT, x, y, "DRAWN bugs %u skeletons %u", ov.drawn, ov.skeletons);
     y += lh;

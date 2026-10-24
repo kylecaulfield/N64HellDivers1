@@ -4,6 +4,7 @@
 
 #include "arena.h"
 #include "bot.h"
+#include "calldown.h"
 #include "camera.h"
 #include "enemy.h"
 #include "flow.h"
@@ -18,6 +19,8 @@ void sim_init(sim_t *s, uint32_t seed)
     s->settings.enemy_cap = SIM_ENEMY_CAP_DEFAULT;
     s->settings.flow_budget = FLOW_BUDGET_DEFAULT;
     s->settings.waves = true;
+    s->reinforcements = REINFORCE_POOL;
+    s->squad = SQUAD_FIGHTING;
     arena_generate(&s->arena, &s->rng);
     flow_init(&s->flow, &s->arena);
     waves_reset(s);
@@ -26,6 +29,20 @@ void sim_init(sim_t *s, uint32_t seed)
     camera_reset(s);
     sim_update_counts(s);
     grid_build(s);
+}
+
+void sim_restart(sim_t *s, uint32_t seed)
+{
+    sim_settings_t settings = s->settings;
+    bool bots = s->players[1].bot;
+    sim_mark_fn mark = s->mark;
+    void *mark_ctx = s->mark_ctx;
+    sim_init(s, seed);
+    s->settings = settings;
+    s->mark = mark;
+    s->mark_ctx = mark_ctx;
+    if (bots)
+        sim_set_bots(s, true);
 }
 
 void sim_push_event(sim_t *s, sim_event_type_t type, uint8_t a, vec2 pos, vec2 dir)
@@ -44,13 +61,22 @@ void sim_clear_events(sim_t *s)
 
 void sim_update_counts(sim_t *s)
 {
-    uint16_t players = 0, projectiles = 0;
+    uint16_t players = 0, projectiles = 0, calldowns = 0;
     for (int i = 0; i < SIM_MAX_PLAYERS; i++)
         if (s->players[i].active)
             players++;
     for (int i = 0; i < SIM_MAX_PROJECTILES; i++)
         if (s->projectiles[i].active)
             projectiles++;
+    for (int i = 0; i < SIM_MAX_BEACONS; i++)
+        calldowns += s->beacons[i].active;
+    for (int i = 0; i < SIM_MAX_STRIKES; i++)
+        calldowns += s->strikes[i].active;
+    for (int i = 0; i < SIM_MAX_TURRETS; i++)
+        calldowns += s->turrets[i].active;
+    for (int i = 0; i < SIM_MAX_PICKUPS; i++)
+        calldowns += s->pickups[i].active;
+    s->counts.calldowns = calldowns;
     enemies_collect_active(s);
     s->counts.players = players;
     s->counts.enemies = s->active_count;
@@ -90,6 +116,9 @@ void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS])
 
     sim_mark(s, SIM_PHASE_PROJECTILES);
     projectiles_update(s);
+
+    sim_mark(s, SIM_PHASE_CALLDOWNS);
+    calldowns_update(s);
 
     sim_mark(s, SIM_PHASE_SPAWN);
     waves_update(s);

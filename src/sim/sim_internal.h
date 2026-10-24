@@ -17,6 +17,10 @@ static inline void sim_mark(sim_t *s, sim_phase_t phase)
         s->mark(s->mark_ctx, phase);
 }
 
+// A projectile from the pool (none if it is exhausted). Returns its index or -1.
+int sim_spawn_projectile(sim_t *s, uint8_t owner, uint8_t weapon, vec2 pos, vec2 dir,
+                         float speed, float range, float damage);
+
 // Damage entry points (also used by the tests).
 void player_damage(sim_t *s, int idx, float amount);
 void enemy_damage(sim_t *s, int idx, float amount, vec2 hit_pos, vec2 shot_dir);

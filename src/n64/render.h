@@ -35,5 +35,8 @@ uint32_t render_scene(const sim_t *sim, float anim_dt);
 // Present the frame.
 void render_end(void);
 const render_stats_t *render_stats(void);
+// Screen position of a point `height` metres above `pos`, using this frame's
+// camera (call after render_scene). False when off screen.
+bool render_project(vec2 pos, float height, int *x, int *y);
 
 #endif

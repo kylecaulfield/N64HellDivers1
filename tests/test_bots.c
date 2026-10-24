@@ -1,3 +1,5 @@
+#include "bot.h"
+#include "calldown.h"
 #include "camera.h"
 #include "test.h"
 #include "test_util.h"
@@ -54,7 +56,7 @@ void test_bots_follow_the_leader(void)
         CHECK(v2_len(v2_sub(s.players[i].pos, s.players[0].pos)) < 7.0f);
 }
 
-void test_bot_stays_a_bot_after_respawn(void)
+void test_bots_reinforce_a_dead_teammate(void)
 {
     sim_t s;
     setup_empty(&s);
@@ -62,9 +64,17 @@ void test_bot_stays_a_bot_after_respawn(void)
     player_damage(&s, 2, PLAYER_HP);
     sim_input_t in[SIM_MAX_PLAYERS];
     inputs_none(in);
-    step_n(&s, in, PLAYER_RESPAWN_TICKS + 1);
+    // A bot enters the code (4 inputs, every other tick), throws, and the
+    // pod lands after the flight and the call-in delay.
+    int budget = 8 + BEACON_FLIGHT_TICKS + calldown_defs[CALLDOWN_REINFORCE].delay + 10;
+    int t = 0;
+    while (!sim_player_alive(&s.players[2]) && t < budget) {
+        sim_step(&s, in);
+        t++;
+    }
     CHECK(sim_player_alive(&s.players[2]));
-    CHECK(s.players[2].bot);
+    CHECK(s.players[2].bot); // still a bot after coming back
+    CHECK_EQ_INT(s.reinforcements, REINFORCE_POOL - 1);
 }
 
 void test_force_max_zoom(void)
@@ -99,4 +109,22 @@ void test_sim_phase_marks_in_order(void)
     CHECK_EQ_INT(nmarks, SIM_PHASE_COUNT);
     for (int i = 0; i < nmarks; i++)
         CHECK_EQ_INT(marks[i], i);
+}
+
+void test_bot_holds_fire_with_a_teammate_in_line(void)
+{
+    sim_t s;
+    setup_empty(&s);
+    sim_set_bots(&s, true);
+    s.players[0].pos = v2(0.0f, 0.0f);
+    s.players[1].pos = v2(0.0f, -4.0f);
+    s.players[2].pos = v2(-10.0f, -10.0f); // the other bots well clear
+    s.players[3].pos = v2(10.0f, -10.0f);
+    sim_spawn_enemy(&s, ENEMY_GNASHER, v2(0.0f, 6.0f)); // player 1 stands between
+    player_intent_t it = bot_intent(&s, 1);
+    CHECK(!it.fire);
+    CHECK(v2_len(it.move) > 0.5f); // steps aside instead
+    s.players[0].pos = v2(5.0f, 0.0f);
+    it = bot_intent(&s, 1);
+    CHECK(it.fire);
 }

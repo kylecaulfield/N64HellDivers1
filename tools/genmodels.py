@@ -467,6 +467,38 @@ def turret():
     return t
 
 
+def crate():
+    """Resupply crate, ~0.9 m: amber-banded box with a lid."""
+    t = []
+    t += box(0, 0.35, 0, 0.9, 0.7, 0.7, ARMOR_DARK, top=ARMOR, bottom_face=False)
+    for x in (-0.3, 0.3):
+        t += box(x, 0.36, 0, 0.12, 0.72, 0.72, AMBER, bottom_face=False)    # straps
+    t += box(0, 0.74, 0, 0.5, 0.06, 0.4, AMBER, bottom_face=False)          # lid handle
+    return t
+
+
+def mgcase():
+    """Machine-gun case, ~1.3 m long: flat dark case with a visor-blue stripe."""
+    t = []
+    t += box(0, 0.18, 0, 0.5, 0.36, 1.3, GUN, top=ARMOR_DARK, bottom_face=False)
+    t += box(0, 0.37, 0, 0.12, 0.03, 1.1, VISOR, bottom_face=False)
+    for z in (-0.4, 0.4):
+        t += box(0, 0.2, z, 0.54, 0.1, 0.1, AMBER, bottom_face=False)       # latches
+    return t
+
+
+def pod():
+    """Reinforcement drop pod, ~2.2 m tall: hull, amber nose cone, fins."""
+    t = []
+    t += cylinder(0, 0.0, 0, 0.55, 1.4, 6, HULL, cap_color=HULL_DARK)
+    t += cylinder(0, 1.4, 0, 0.55, 0.8, 6, AMBER, radius_top=0.0)
+    for k in range(3):
+        a = 2 * math.pi * k / 3
+        fin = box(0, 0, 0, 0.08, 0.7, 0.45, HULL_DARK, bottom_face=False)
+        t += transform(fin, rot_y=a, offset=(math.sin(a) * 0.6, 0.35, math.cos(a) * 0.6))
+    return t
+
+
 def rock(seed, base_color, size):
     rnd = random.Random(seed)
     table = {}
@@ -517,6 +549,9 @@ MODELS = {
     "dropship": dropship,
     "beacon": beacon,
     "turret": turret,
+    "crate": crate,
+    "mgcase": mgcase,
+    "pod": pod,
     "rock_a": lambda: rock(11, ROCK_A, 1.6),
     "rock_b": lambda: rock(23, ROCK_B, 2.4),
     "rock_c": lambda: rock(37, ROCK_C, 1.0),

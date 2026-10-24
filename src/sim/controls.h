@@ -8,7 +8,8 @@
 // Scheme B: stick moves; C-buttons aim and fire in 8 directions (two
 //           adjacent C-buttons = diagonal). Z = dive.
 // Both:     B tap = reload, B hold = switch weapon. Holding R puts the
-//           C-buttons in calldown-code mode (no firing; codes arrive in M3).
+//           C-buttons in calldown-code mode: no firing, each C-button press
+//           is a code input, releasing R throws the calldown.
 
 #include "sim.h"
 
@@ -21,6 +22,7 @@ typedef struct {
     bool reload;
     bool switch_weapon;
     bool code_mode;      // R held
+    uint8_t code_input;  // code_input_t pressed this tick (code mode only)
 } player_intent_t;
 
 // Stick -> unit-disc vector with the deadzone removed.

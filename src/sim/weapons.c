@@ -2,6 +2,8 @@
 
 #include <math.h>
 
+#include "sim_internal.h"
+
 const weapon_def_t weapon_defs[WEAPON_COUNT] = {
     [WEAPON_RIFLE] = {
         .name = "RIFLE", .mag_size = 30, .pellets = 1, .damage = 20.0f,
@@ -13,11 +15,18 @@ const weapon_def_t weapon_defs[WEAPON_COUNT] = {
         .fire_interval = 24, .reload_ticks = SECONDS(2.5f), .start_reserve = 36,
         .speed = 45.0f, .range = 12.0f, .spread = 0.14f,
     },
+    // Support weapon, from the Machine Gun calldown only.
+    [WEAPON_MACHINE_GUN] = {
+        .name = "MG", .mag_size = 100, .pellets = 1, .damage = 18.0f,
+        .fire_interval = 2, .reload_ticks = SECONDS(3.5f), .start_reserve = 300,
+        .speed = 60.0f, .range = 30.0f, .spread = 0.05f,
+    },
 };
 
 weapon_slot_t weapon_slot_full(weapon_type_t type)
 {
     return (weapon_slot_t){
+        .owned = true,
         .type = (uint8_t)type,
         .mag = weapon_defs[type].mag_size,
         .reserve = weapon_defs[type].start_reserve,
@@ -70,26 +79,10 @@ static void fire(sim_t *s, int idx, vec2 aim)
     vec2 muzzle = v2_add(p->pos, v2_scale(dir, MUZZLE_OFFSET));
 
     for (int n = 0; n < def->pellets; n++) {
-        int slot = -1;
-        for (int i = 0; i < SIM_MAX_PROJECTILES; i++) {
-            if (!s->projectiles[i].active) {
-                slot = i;
-                break;
-            }
-        }
-        if (slot < 0)
-            break; // pool exhausted: the shot still happens, the pellet is lost
+        // An exhausted pool loses the pellet; the shot still happens.
         float dev = (rng_float(&s->rng) * 2.0f - 1.0f) * def->spread;
-        vec2 pdir = v2_rotate(dir, dev);
-        s->projectiles[slot] = (projectile_t){
-            .active = true,
-            .owner = (uint8_t)idx,
-            .weapon = w->type,
-            .damage = def->damage,
-            .pos = muzzle,
-            .vel = v2_scale(pdir, def->speed),
-            .range = def->range,
-        };
+        sim_spawn_projectile(s, (uint8_t)idx, w->type, muzzle, v2_rotate(dir, dev),
+                             def->speed, def->range, def->damage);
     }
     sim_push_event(s, EV_SHOT, w->type, muzzle, dir);
 
@@ -132,7 +125,9 @@ void weapon_update(sim_t *s, int idx, bool want_fire, bool want_reload, bool wan
     }
 
     if (want_switch) {
-        p->weapon = (uint8_t)((p->weapon + 1) % PLAYER_WEAPON_SLOTS);
+        do // the next owned slot
+            p->weapon = (uint8_t)((p->weapon + 1) % PLAYER_WEAPON_SLOTS);
+        while (!p->weapons[p->weapon].owned);
         p->reload_timer = 0; // switching cancels a reload in progress
         if (p->fire_cooldown < PLAYER_SWITCH_TICKS)
             p->fire_cooldown = PLAYER_SWITCH_TICKS;

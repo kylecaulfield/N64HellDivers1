@@ -12,7 +12,10 @@ Makefile changes are needed.
 | `bulwark.glb` | Slow armored brute bug. Skinned, `walk` and `attack`. Budget ~100 triangles |
 | `dropship.glb` | Extraction dropship |
 | `beacon.glb` | Calldown beacon |
-| `turret.glb` | Sentry turret |
+| `turret.glb` | Sentry turret (also seen falling onto its beacon) |
+| `crate.glb` | Resupply crate |
+| `mgcase.glb` | Machine gun case |
+| `pod.glb` | Reinforcement drop pod (seen falling onto its beacon) |
 | `rock_a.glb`, `rock_b.glb`, `rock_c.glb` | Arena obstacles. Collision radii are 0.9, 1.35 and 0.55 m (`rock_radius` in `src/sim/arena.c`); keep a replacement about that size or update the table |
 | `ground.glb` | The whole 64x64 m arena floor, centred on the origin |
 

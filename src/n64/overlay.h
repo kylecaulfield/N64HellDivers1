@@ -9,9 +9,13 @@
 #include "sim.h"
 #include "tickclock.h"
 
+// Text styles on the builtin debug font, registered by overlay_init and used
+// by the HUD and the debug menu too.
+enum { STYLE_NORMAL, STYLE_WARN, STYLE_TITLE, STYLE_DIM, STYLE_GOOD };
+
 // Sim phases timed through sim_t.mark: players (and the per-tick enemy list
 // and grid), flow, enemies (AI and movement), crowd (separation, rocks),
-// projectiles, spawn (spawner, camera, counts).
+// projectiles, calldowns, spawn (spawner, camera, counts).
 #define TIMED_PHASES (SIM_PHASE_COUNT - 1)
 
 typedef struct {
@@ -21,8 +25,9 @@ typedef struct {
     uint32_t phase_us[TIMED_PHASES];  // sim_us split by phase
     uint32_t anim_us;                 // renderer: skeleton updates
     uint32_t build_us;                // renderer: matrices and particles
-    uint32_t submit_us;               // issuing GPU commands (3D, HUD, overlay); grows when
-                                      // the RSP queue is full, i.e. when GPU-bound
+    uint32_t submit_us;               // issuing the 3D commands; grows when the RSP queue
+                                      // is full, i.e. when GPU-bound
+    uint32_t hud_us;                  // 2D text and panels: HUD, debug menu, overlay
     uint16_t drawn_bugs;              // bugs on screen after culling
     uint16_t skeletons;               // skeletons updated
 } frame_timing_t;

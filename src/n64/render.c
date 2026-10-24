@@ -11,9 +11,11 @@
 #include <t3d/t3dskeleton.h>
 #include <t3d/tpx.h>
 
-// Draws the sim state: floor, rocks, players, bugs as Tiny3D models, and
-// everything small (bullets, effects, aim markers) as tpx particles in a
-// single RSP command.
+// Draws the sim state: floor, rocks, players, bugs and calldown props
+// (beacons, drops, turrets, pickups) as Tiny3D models, and everything small
+// (bullets, effects, beacon lights, telegraphs, aim markers) as tpx
+// particles: one opaque pass, then one semi-transparent pass for explosion
+// cores. Camera shake and the explosion flash come from fx.
 //
 // Bugs and soldiers are skinned. Bugs of one type share POSE_SLOTS
 // skeletons; each bug just points the RSP at the slot it uses before its
@@ -25,11 +27,26 @@
 // Bug models must be in enemy_type_t order, right after the soldier.
 enum {
     MDL_SOLDIER, MDL_SKITTER, MDL_GNASHER, MDL_BULWARK,
-    MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND, MDL_COUNT
+    MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND,
+    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_COUNT
 };
 
 static const char *const model_names[MDL_COUNT] = {
     "soldier", "skitter", "gnasher", "bulwark", "rock_a", "rock_b", "rock_c", "ground",
+    "beacon", "turret", "crate", "mgcase", "pod",
+};
+
+// What falls from orbit for each calldown (-1: nothing, it is a strike), and
+// the colour of its beacon light.
+static const int8_t drop_model[CALLDOWN_COUNT] = {
+    [CALLDOWN_REINFORCE] = MDL_POD, [CALLDOWN_RESUPPLY] = MDL_CRATE,
+    [CALLDOWN_MACHINE_GUN] = MDL_MGCASE, [CALLDOWN_AIRSTRIKE] = -1,
+    [CALLDOWN_BARRAGE] = -1, [CALLDOWN_SENTRY] = MDL_TURRET,
+};
+static const uint8_t beacon_rgb[CALLDOWN_COUNT][3] = {
+    [CALLDOWN_REINFORCE] = { 90, 220, 255 }, [CALLDOWN_RESUPPLY] = { 120, 255, 120 },
+    [CALLDOWN_MACHINE_GUN] = { 255, 200, 60 }, [CALLDOWN_AIRSTRIKE] = { 255, 70, 50 },
+    [CALLDOWN_BARRAGE] = { 255, 120, 40 }, [CALLDOWN_SENTRY] = { 255, 240, 90 },
 };
 
 typedef struct {
@@ -48,8 +65,12 @@ static struct {
 static render_stats_t stats;
 
 #define MODEL_SCALE (WORLD_SCALE / 64.0f)
-#define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES)
-#define MAX_PARTICLES (SIM_MAX_PROJECTILES * 2 + FX_MAX + SIM_MAX_PLAYERS * 3 + 2)
+#define MAX_PROPS (SIM_MAX_BEACONS * 2 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS)
+#define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES + MAX_PROPS)
+#define TELEGRAPH_DOTS 16
+#define MAX_PARTICLES (SIM_MAX_PROJECTILES * 2 + FX_MAX + SIM_MAX_PLAYERS * 3 + \
+                       SIM_MAX_BEACONS * (4 + TELEGRAPH_DOTS) + SIM_MAX_STRIKES * TELEGRAPH_DOTS + \
+                       SIM_MAX_PICKUPS + 4)
 #define PARTICLE_PAIRS (MAX_PARTICLES / 2)
 #define CULL_PAD 2.0f
 
@@ -68,6 +89,7 @@ static TPXParticleS16 *particles; // [FB_COUNT][PARTICLE_PAIRS]
 static T3DMat4FP *particle_mat;   // identity: particles are already in world units
 static uint8_t dyn_pose[MAX_DYNAMIC]; // pose slot per dynamic matrix (bugs only)
 static uint8_t dyn_type[MAX_DYNAMIC]; // enemy type per dynamic matrix (bugs only)
+static uint8_t prop_model[MAX_PROPS]; // model per prop matrix
 
 // Model matrix for a unit standing at `pos` facing `facing` (sim space),
 // lifted by `lift` metres and pitched forward by `pitch` radians around its
@@ -196,7 +218,65 @@ static void pb_add(pbuild_t *pb, float x, float y, float z, int size, uint8_t r,
     pb->count++;
 }
 
-static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec2 vmax)
+// tpx draws pairs: pad an odd count with an invisible particle.
+static void pb_pad(pbuild_t *pb)
+{
+    if ((pb->count & 1) && pb->count < PARTICLE_PAIRS * 2) {
+        *tpx_buffer_s16_get_size(pb->buf, pb->count) = 0;
+        pb->count++;
+    }
+}
+
+static void pb_ring(pbuild_t *pb, vec2 c, float radius, uint8_t r, uint8_t g, uint8_t b)
+{
+    for (int k = 0; k < TELEGRAPH_DOTS; k++) {
+        float a = 6.2832f * (float)k / TELEGRAPH_DOTS;
+        pb_add(pb, c.x + fm_cosf(a) * radius, 0.1f, -(c.y + fm_sinf(a) * radius), 14, r, g, b);
+    }
+}
+
+// Calldown markers: a blinking light column over each beacon (faster near
+// arrival) and where the strikes will land.
+static void build_calldowns(const sim_t *sim, pbuild_t *pb)
+{
+    for (int i = 0; i < SIM_MAX_BEACONS; i++) {
+        const beacon_t *b = &sim->beacons[i];
+        if (!b->active)
+            continue;
+        const uint8_t *c = beacon_rgb[b->type];
+        int period = b->timer > SECONDS(2.0f) ? 8 : 3;
+        bool on = b->state == BEACON_FLYING || ((b->timer / period) & 1) == 0;
+        if (on && b->state == BEACON_ARMED)
+            for (int k = 0; k < 4; k++)
+                pb_add(pb, b->pos.x, 0.6f + 0.8f * k, -b->pos.y, 28 - 4 * k, c[0], c[1], c[2]);
+        if (b->state != BEACON_ARMED)
+            continue;
+        if (b->type == CALLDOWN_BARRAGE) {
+            pb_ring(pb, b->pos, BARRAGE_AREA, c[0], c[1], c[2]);
+        } else if (b->type == CALLDOWN_AIRSTRIKE) {
+            for (int k = 0; k < AIRSTRIKE_BOMBS; k++) {
+                float along = ((float)k - (AIRSTRIKE_BOMBS - 1) * 0.5f) * AIRSTRIKE_SPACING;
+                vec2 at = v2_add(b->pos, v2_scale(b->dir, along));
+                pb_add(pb, at.x, 0.1f, -at.y, 24, c[0], c[1], c[2]);
+            }
+        }
+    }
+    for (int i = 0; i < SIM_MAX_STRIKES; i++) {
+        const strike_t *k = &sim->strikes[i];
+        if (k->active && k->type == CALLDOWN_BARRAGE)
+            pb_ring(pb, k->center, BARRAGE_AREA, 255, 70, 40);
+    }
+    for (int i = 0; i < SIM_MAX_PICKUPS; i++) {
+        const pickup_t *k = &sim->pickups[i];
+        if (k->active && ((sim->tick / 8) & 1))
+            pb_add(pb, k->pos.x, 1.4f, -k->pos.y, 24, 255, 220, 120);
+    }
+}
+
+// Opaque particles from index 0, then (from *glow_start, an even index) the
+// semi-transparent ones. Returns the opaque count.
+static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec2 vmax,
+                           int *glow_start, int *glow_count)
 {
     pbuild_t pb = { .buf = buf, .count = 0 };
 
@@ -222,21 +302,67 @@ static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec
         }
     }
 
-    const fx_particle_t *fx = fx_particles();
-    for (int i = 0; i < FX_MAX; i++) {
-        const fx_particle_t *f = &fx[i];
-        if (!f->life)
-            continue;
-        int size = f->size * f->life / f->life_max + 4;
-        pb_add(&pb, f->x, f->y, f->z, size, f->rgb[0], f->rgb[1], f->rgb[2]);
-    }
+    build_calldowns(sim, &pb);
 
-    // tpx draws pairs: pad an odd count with an invisible particle.
-    if (pb.count & 1) {
-        *tpx_buffer_s16_get_size(buf, pb.count) = 0;
-        pb.count++;
+    const fx_particle_t *fx = fx_particles();
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1) {
+            pb_pad(&pb);
+            *glow_start = pb.count;
+        }
+        for (int i = 0; i < FX_MAX; i++) {
+            const fx_particle_t *f = &fx[i];
+            if (!f->life || f->glow != (pass == 1))
+                continue;
+            int size = f->size * f->life / f->life_max + 4;
+            pb_add(&pb, f->x, f->y, f->z, size, f->rgb[0], f->rgb[1], f->rgb[2]);
+        }
     }
-    return pb.count;
+    pb_pad(&pb);
+    *glow_count = pb.count - *glow_start;
+    return *glow_start;
+}
+
+// --- Props ---------------------------------------------------------------------
+
+// Beacons (arcing while thrown), what falls on them in the last moments of
+// the call-in, turrets and pickups. Appends matrices after `n`; returns the
+// new count.
+static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 vmax)
+{
+    int first = n;
+    for (int i = 0; i < SIM_MAX_BEACONS; i++) {
+        const beacon_t *b = &sim->beacons[i];
+        if (!b->active || !in_rect(b->pos, vmin, vmax))
+            continue;
+        float lift = 0.0f;
+        if (b->state == BEACON_FLYING) {
+            float f = 1.0f - (float)b->timer / BEACON_FLIGHT_TICKS;
+            lift = 0.9f * (1.0f - f) + 6.0f * f * (1.0f - f);
+        }
+        prop_model[n - first] = MDL_BEACON;
+        unit_matrix(&dyn[n++], b->pos, lift, b->dir, 0.0f, 1.0f);
+        if (b->state == BEACON_ARMED && drop_model[b->type] >= 0 && b->timer <= DROP_TICKS) {
+            float k = (float)b->timer / DROP_TICKS;
+            prop_model[n - first] = (uint8_t)drop_model[b->type];
+            unit_matrix(&dyn[n++], b->pos, 25.0f * k * k, b->dir, 0.0f, 1.0f);
+        }
+    }
+    for (int i = 0; i < SIM_MAX_TURRETS; i++) {
+        const turret_t *t = &sim->turrets[i];
+        if (!t->active || !in_rect(t->pos, vmin, vmax))
+            continue;
+        prop_model[n - first] = MDL_TURRET;
+        unit_matrix(&dyn[n++], t->pos, 0.0f, t->facing, 0.0f, 1.0f);
+    }
+    for (int i = 0; i < SIM_MAX_PICKUPS; i++) {
+        const pickup_t *k = &sim->pickups[i];
+        if (!k->active || !in_rect(k->pos, vmin, vmax))
+            continue;
+        prop_model[n - first] = k->type == PICKUP_RESUPPLY ? MDL_CRATE : MDL_MGCASE;
+        unit_matrix(&dyn[n++], k->pos, 0.0f, v2(0.0f, 1.0f), 0.0f, 1.0f);
+    }
+    return n;
 }
 
 // --- Frame ---------------------------------------------------------------------
@@ -280,10 +406,12 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     T3DMat4FP *dyn = &dynamic_mats[frame_idx * MAX_DYNAMIC];
     TPXParticleS16 *pbuf = &particles[frame_idx * PARTICLE_PAIRS];
 
-    // Camera from the sim: looking north, pitched down, `dist` from target.
+    // Camera from the sim: looking north, pitched down, `dist` from target,
+    // plus any explosion shake (visual only, the sim never sees it).
     const camera_t *cam = &sim->camera;
     float h = fm_sinf(CAM_PITCH_RAD) * cam->dist, back = fm_cosf(CAM_PITCH_RAD) * cam->dist;
-    T3DVec3 target = {{ cam->target.x * WORLD_SCALE, 0.0f, -cam->target.y * WORLD_SCALE }};
+    vec2 look = v2_add(cam->target, fx_shake());
+    T3DVec3 target = {{ look.x * WORLD_SCALE, 0.0f, -look.y * WORLD_SCALE }};
     T3DVec3 eye = {{ target.v[0], h * WORLD_SCALE, target.v[2] + back * WORLD_SCALE }};
     t3d_viewport_set_projection(&viewport, CAM_FOV_Y_RAD, 2.0f * WORLD_SCALE, 70.0f * WORLD_SCALE);
     t3d_viewport_look_at(&viewport, &eye, &target, &(T3DVec3){{ 0.0f, 1.0f, 0.0f }});
@@ -326,7 +454,10 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
         unit_matrix(&dyn[ndyn++], e->pos, 0.0f, e->facing, pitch, 1.0f);
     }
     stats.drawn_bugs = (uint16_t)(ndyn - first_bug);
-    int npart = build_particles(sim, pbuf, vmin, vmax);
+    int first_prop = ndyn;
+    ndyn = build_props(sim, dyn, ndyn, vmin, vmax);
+    int glow_start, nglow;
+    int npart = build_particles(sim, pbuf, vmin, vmax, &glow_start, &nglow);
     uint64_t t1 = get_ticks();
     update_poses(sim, used, anim_dt);
     uint64_t t2 = get_ticks();
@@ -380,6 +511,10 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
             rspq_block_run(blocks[MDL_SKITTER + t]);
         }
     }
+    for (int i = first_prop; i < ndyn; i++) {
+        t3d_matrix_set(&dyn[i], true);
+        rspq_block_run(blocks[prop_model[i - first_prop]]);
+    }
     t3d_matrix_pop(1);
 
     if (npart) {
@@ -397,12 +532,51 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
         tpx_particle_draw_s16(pbuf, (uint32_t)npart);
         tpx_matrix_pop(1);
     }
+    if (nglow) {
+        // Explosion cores: semi-transparent with a constant alpha. (The RDP's
+        // additive blend wraps to black on overflow, see rdpq_mode.h.) They
+        // test depth but don't write it, so they never hide each other.
+        rdpq_set_mode_standard();
+        rdpq_mode_zbuf(true, false);
+        rdpq_mode_zoverride(true, 0, 0);
+        rdpq_mode_combiner(RDPQ_COMBINER1((PRIM, 0, ENV, 0), (0, 0, 0, 1)));
+        rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY_CONST);
+        rdpq_set_fog_color(RGBA32(0, 0, 0, 150));
+        rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
+        tpx_state_from_t3d();
+        tpx_matrix_push(particle_mat);
+        tpx_state_set_base_size(64);
+        tpx_state_set_scale(1.0f, 1.0f);
+        tpx_particle_draw_s16(&pbuf[glow_start / 2], (uint32_t)nglow);
+        tpx_matrix_pop(1);
+    }
+    float flash = fx_flash();
+    if (flash > 0.02f) {
+        // Explosion flash: one blended full-screen rectangle, a frame or two.
+        rdpq_set_mode_standard();
+        rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+        rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+        rdpq_set_prim_color(RGBA32(255, 230, 190, (uint8_t)(flash * 160.0f)));
+        rdpq_fill_rectangle(0, 0, 320, 240);
+    }
     return wait_us;
 }
 
 const render_stats_t *render_stats(void)
 {
     return &stats;
+}
+
+bool render_project(vec2 pos, float height, int *x, int *y)
+{
+    T3DVec3 world = {{ pos.x * WORLD_SCALE, height * WORLD_SCALE, -pos.y * WORLD_SCALE }}, screen;
+    t3d_viewport_calc_viewspace_pos(&viewport, &screen, &world);
+    if (screen.v[2] >= 1.0f || screen.v[0] < 0.0f || screen.v[0] >= 320.0f ||
+        screen.v[1] < 0.0f || screen.v[1] >= 240.0f)
+        return false;
+    *x = (int)screen.v[0];
+    *y = (int)screen.v[1];
+    return true;
 }
 
 void render_end(void)

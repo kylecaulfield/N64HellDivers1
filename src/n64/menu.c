@@ -16,6 +16,8 @@ enum {
     ITEM_INF_AMMO,
     ITEM_REFILL,
     ITEM_KILL_ALL,
+    ITEM_FREE_CALLDOWNS,
+    ITEM_KILL_P1,
     ITEM_CAP,
     ITEM_FLOW,
     ITEM_BENCH,
@@ -96,6 +98,17 @@ static void activate(sim_t *sim, int item, int dir)
     case ITEM_KILL_ALL:
         sim_kill_all_enemies(sim);
         break;
+    case ITEM_FREE_CALLDOWNS:
+        st->free_calldowns = !st->free_calldowns;
+        if (st->free_calldowns)
+            for (int i = 0; i < SIM_MAX_PLAYERS; i++)
+                for (int t = 0; t < CALLDOWN_COUNT; t++)
+                    sim->cooldowns[i][t] = 0;
+        break;
+    case ITEM_KILL_P1:
+        sim_kill_player(sim, 0);
+        menu_toggle(); // watch the reinforce happen
+        break;
     case ITEM_CAP: {
         int cap = (int)st->enemy_cap + (dir < 0 ? -8 : 8);
         if (cap < 8)
@@ -170,6 +183,8 @@ void menu_draw(const sim_t *sim)
         case ITEM_INF_AMMO: rdpq_text_printf(NULL, FONT, x, y, "%s Infinite ammo: %s", m, on_off(st->infinite_ammo)); break;
         case ITEM_REFILL:   rdpq_text_printf(NULL, FONT, x, y, "%s Refill ammo", m); break;
         case ITEM_KILL_ALL: rdpq_text_printf(NULL, FONT, x, y, "%s Kill all bugs", m); break;
+        case ITEM_FREE_CALLDOWNS: rdpq_text_printf(NULL, FONT, x, y, "%s No calldown cooldowns: %s", m, on_off(st->free_calldowns)); break;
+        case ITEM_KILL_P1:  rdpq_text_printf(NULL, FONT, x, y, "%s Kill P1 (test reinforce)", m); break;
         case ITEM_CAP:      rdpq_text_printf(NULL, FONT, x, y, "%s Enemy cap: %u <>", m, st->enemy_cap); break;
         case ITEM_FLOW:     rdpq_text_printf(NULL, FONT, x, y, "%s Flow budget: %u <>", m, st->flow_budget); break;
         case ITEM_BENCH:    rdpq_text_printf(NULL, FONT, x, y, "%s Run stress bench (72 s)", m); break;

@@ -9,13 +9,13 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M2** (the swarm stress test): waves of all three bug types
-breaching from the arena edges, a shared flow field steering them around
-rocks, a uniform grid for neighbour queries, skinned and animated bugs sharing
-pose slots, bots for players 2-4, and a stress bench that measures how many
-bugs the hardware holds at 30 fps. That number sets the enemy cap (currently
-64, one constant: `SIM_ENEMY_CAP_DEFAULT` in `src/sim/tuning.h`). Death
-respawns you after 3 s; Reinforce replaces that in M3.
+**Status: milestone M3**: calldowns (Reinforce, Resupply, Machine Gun,
+Airstrike, Orbital Barrage, Sentry) entered as directional codes, friendly
+fire on everything, and death that lasts until a teammate reinforces you from
+a shared pool. Built on M2's swarm: waves of all three bug types, a shared
+flow field, a uniform grid, skinned bugs sharing pose slots, bots for players
+2-4, and the stress bench whose hardware numbers set the enemy cap (currently
+64, one constant: `SIM_ENEMY_CAP_DEFAULT` in `src/sim/tuning.h`).
 
 ## Pinned dependencies
 
@@ -72,7 +72,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
-| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu and pauses, then logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), then turns bots on and has one reinforce another, and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make BENCH=1` | `hivebreakers-bench.z64`: runs the stress bench by itself 2 s after boot (see below) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
@@ -110,7 +110,7 @@ Pick a scheme per player in the debug menu (default A).
 | Fire | Hold **Z** (facing locks, so you can strafe) | Hold a C-button |
 | Dive | **A** | **Z** |
 | Reload / switch weapon | Tap **B** / hold **B** | Tap **B** / hold **B** |
-| Calldown codes (M3) | Hold **R**: C-buttons enter the code, no firing | same |
+| Calldowns | Hold **R**: the C-buttons enter a code (no firing); release **R** to throw | same |
 
 Both schemes have a soft aim-assist cone (about 10 degrees for A, which aims
 precisely with the stick; about 23 degrees for B, half an 8-way sector).
@@ -130,13 +130,48 @@ value, B closes:
 | P1 controls | Scheme A or B for player 1 |
 | Waves | Wave spawner on/off |
 | Spawn N mixed bugs | Spawns 10, 25, 50 or 100 (D-Left/Right) of the wave mix around the camera |
-| Bots P2-P4 | Fill ports 2-4 with bots (scheme B) that fight and follow P1 |
+| Bots P2-P4 | Fill ports 2-4 with bots (scheme B) that fight, follow P1 and call Reinforce for dead teammates |
 | Force max zoom | Camera fully zoomed out, the worst case for drawing |
 | God mode / Infinite ammo / Refill ammo / Kill all bugs | What they say |
+| No calldown cooldowns | Throw calldowns back to back |
+| Kill P1 (test reinforce) | Kills player 1 even in god mode, and closes the menu |
 | Enemy cap | Live bug limit, in steps of 8 |
 | Flow budget | Flow-field cells expanded per tick (256-4096) |
 | Run stress bench | The bench below (72 s); closes the menu |
 | Stats overlay | Same as L + D-Up |
+
+## Calldowns
+
+Hold **R** and the calldown panel opens: every calldown, its code
+(C-Up `^`, C-Down `v`, C-Left `<`, C-Right `>`), and whether it is ready. The
+inputs you have entered light up green and codes that no longer match dim. A
+wrong input clears the code; keep holding R and start again. Release R on a
+complete code to throw a beacon about 6 m in the direction you face (a rock
+stops it short). After the call-in delay the calldown arrives on the beacon,
+which blinks faster as it gets close and shows the seconds left.
+
+| Calldown | Code | Cooldown | Call-in | What arrives |
+|---|---|---|---|---|
+| Reinforce | `< > ^ ^` | 10 s | 3 s | Pod with every dead teammate, one reinforcement each. Only when someone is down, one at a time |
+| Resupply | `v v < >` | 60 s | 4 s | Crate: walk into it to refill all ammo, 4 uses |
+| Machine Gun | `< v < ^ >` | 120 s | 4 s | Case with the support weapon (100-round belt, takes the third weapon slot) |
+| Airstrike | `> ^ > v` | 45 s | 3 s | 5 bombs in a line along your throw |
+| Orbital Barrage | `> v v < ^ >` | 90 s | 5 s | 15 shells at random within 8 m over 6 s (the area is ringed in red) |
+| Sentry | `^ < v > ^` | 90 s | 4 s | Turret: shoots the nearest bug in 16 m, 200 rounds or 45 s |
+
+Cooldowns are per player and survive death. All of it is in
+`src/sim/calldown.c` (codes and timings) and `src/sim/tuning.h`.
+
+**Friendly fire is on for everything**: bullets hit any player except the
+shooter, explosions hurt everyone in range, the sentry's bullets hit players
+in its line of fire, and anything dropped from orbit crushes what it lands
+on, teammates included. Bots hold fire when a teammate is in their line.
+
+**Death and reinforcements**: a dead player stays down until a teammate's
+Reinforce lands. The squad shares 5 reinforcements per mission (`REINF` at
+the top left). If the whole squad is down, an emergency reinforce lands
+after 5 s, using the pool. With the pool empty the squad is lost and the
+mission restarts after 5 s (M4 adds the results screen).
 
 ## Testing in an emulator
 
@@ -156,8 +191,9 @@ Hold **L** and press **D-Up** (any controller) to toggle the overlay:
 HIVEBREAKERS <build>            build id (git describe of the commit it was built from)
 FPS 29.91 frame 33.43ms max ... measured frame rate, average and worst frame time
 CPU 5.80ms max 8.20ms sim ...   CPU busy time per frame (excludes waiting for vblank / a free framebuffer)
-SIM us pl fl en cr pr sp        sim time per frame by phase, see below
-REN us anim build sub           renderer CPU time: skeletons, matrices/particles, command submission
+SIM us pl fl en cr              sim time per frame by phase, see below
+       pr cd sp
+REN us anim build sub hud       renderer CPU time: skeletons, matrices/particles, 3D submission, 2D text
 DRAWN bugs 40 skeletons 12      bugs drawn after culling; skeletons animated this frame
 RDP 4.20ms  GPU done 7.90ms     RDP busy (hardware counter); GPU done = submit start -> RDP finished
 TICK 1234 dropped 0             sim ticks; dropped = ticks skipped because a frame ran long
@@ -167,10 +203,11 @@ RAM 1211/8192K heap 818K        RDRAM in use (code+data+heap) / installed; heap 
 
 Sim phases: **pl** players (and the per-tick enemy list and grid), **fl** flow
 field, **en** bug AI and movement, **cr** crowd (bugs pushing apart, rock
-collision), **pr** projectiles, **sp** spawner and camera. CPU time is exactly
-sim + anim + build + sub. **sub** is the time spent issuing GPU commands
-(3D, HUD, overlay); it balloons when the RSP's command queue is full, so a
-large *sub* together with *GPU done* near 33 ms means the frame is GPU-bound.
+collision), **pr** projectiles, **cd** calldowns, **sp** spawner and camera.
+CPU time is exactly sim + anim + build + sub + hud. **sub** is issuing the 3D
+commands and **hud** drawing the 2D text and panels; both include time
+blocked on a full RSP command queue, so when they grow with the bug count
+(and *GPU done* nears 33 ms) the frame is GPU-bound.
 
 All times are averages over the last 32 frames. The target is 33.4 ms per
 frame (the N64 runs 240p NTSC at 59.826 Hz, so 30 fps is really 29.91).
@@ -185,10 +222,11 @@ including `rsp_rdpq`, overflow when it is enabled).
 Once per second the same numbers go to the USB log as one line:
 
 ```
-STATS t=90 fps=29.91 frame_avg=33429us frame_max=33433us cpu_avg=6113us cpu_max=7972us sim_avg=2401us ph=320/330/117/719/210/239 ren=1576/811/1322 drawn=26 skel=11 rdp=4.20ms gpu_done=8.89ms drop=0 ent=p1/e26/b0/fx0/cd0 wave=3 ram=1460K/8192K heap=916K
+STATS t=90 fps=29.91 frame_avg=33429us frame_max=33436us cpu_avg=7503us cpu_max=11263us sim_avg=3271us ph=450/1075/168/539/260/36/220 ren=1675/813/397/1345 drawn=19 skel=13 rdp=4.20ms gpu_done=9.44ms drop=0 ent=p4/e20/b0/fx0/cd0 wave=7 ram=1516K/8192K heap=947K
 ```
 
-(`ph=` is pl/fl/en/cr/pr/sp and `ren=` is anim/build/sub, in microseconds.)
+(`ph=` is pl/fl/en/cr/pr/cd/sp and `ren=` is anim/build/sub/hud, in
+microseconds.)
 
 The heap is snapshotted after the first 60 frames. If it ever grows after
 that, the overlay shows `GREW!` in red and the log prints a `WARN heap grew`
@@ -205,7 +243,7 @@ shows `BENCH 5/12: 80 BUGS`. It takes about 72 s and logs one line per level,
 then `BENCH DONE`:
 
 ```
-BENCH level=96 enemies=96 drawn=95 fps=30.03 frame_avg=33303 frame_max=49762 cpu_avg=27088 cpu_max=38203 sim=5831 ph=1149/531/663/2683/272/196 anim=3035 build=2101 submit=16119 rdp=-1 gpu_done=27955 drop=0 proj=2 fx=40
+BENCH level=48 enemies=48 drawn=46 fps=29.91 frame_avg=33429 frame_max=49645 cpu_avg=14895 cpu_max=24519 sim=3750 ph=668/1034/352/981/215/33/198 anim=2766 build=1138 submit=620 hud=6618 rdp=-1 gpu_done=15855 drop=0 proj=0 fx=0
 ```
 
 Times are microseconds per frame, averaged over the 4 s (`_max` is the worst
@@ -219,7 +257,9 @@ audio and the objective (M3+).
 ```
 src/sim/        pure-C simulation core: no libdragon includes, builds on the host
                 controls, weapons, player, enemy, projectile, arena, camera,
-                grid (spatial hash), flow (flow field), waves, bot, tuning.h
+                grid (spatial hash), flow (flow field), waves, bot,
+                calldown (codes, beacons, strikes, turrets, pickups,
+                reinforcements, explosions), tuning.h
 src/n64/        thin N64 layer: boot checks, input, rendering, effects, HUD,
                 debug menu, overlay, timing, stress bench, autotest bot
 tests/          host unit tests for src/sim (make test)
@@ -252,6 +292,10 @@ rom.mk          ROM build (called by the top-level Makefile)
   separation, player shoving, bot targeting.
 - **Shared pose slots.** Bugs of a type share 7 skeletons (6 walk phases and
   an attack); animation cost does not grow with the bug count.
+- **Explosions are cheap.** A few semi-transparent sprites (constant alpha:
+  the RDP's additive blend wraps to black when it overflows, as libdragon's
+  `rdpq_mode.h` warns), some opaque sparks and smoke, a one-rectangle screen
+  flash and camera shake. The cores test depth but don't write it.
 - **Mind the D-cache.** The N64 has 8 KB of direct-mapped data cache. Hot
   loops over many bugs work on compact, cell-ordered copies (see `crowd_t`).
 

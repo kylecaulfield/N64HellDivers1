@@ -109,6 +109,15 @@ int main(void)
 
         // The sim only runs while nothing is covering the game. Effects
         // freeze along with it.
+        // Squad lost: the sim counted down; a fresh mission with the same
+        // settings (M4 puts a results screen here).
+        if (sim.squad == SQUAD_LOST && sim.squad_timer == 0) {
+            sim_restart(&sim, sim.rng.state ^ (uint32_t)frames);
+            render_bind_world(&sim);
+            fx_init();
+            debugf("squad lost: mission restarted\n");
+        }
+
         uint32_t run = (paused || menu_is_open()) ? 0 : ticks;
         for (int i = 0; i < TIMED_PHASES; i++)
             phase_ticks[i] = 0;
@@ -128,9 +137,11 @@ int main(void)
         uint64_t t_sim = get_ticks();
 
         uint32_t wait_us = render_scene(&sim, (float)run * SIM_DT);
+        uint64_t t_hud = get_ticks();
         hud_draw(&sim, paused && !menu_is_open());
         menu_draw(&sim);
         overlay_draw();
+        uint32_t hud_us = (uint32_t)TICKS_TO_US(get_ticks() - t_hud);
         render_end();
         gpu_timing_frame();
         uint64_t t_end = get_ticks();
@@ -142,7 +153,7 @@ int main(void)
         // What is left of the render time once the framebuffer wait and the
         // CPU-side work are taken out is command issue, including any time
         // blocked on a full RSP queue.
-        uint32_t cpu_side = wait_us + rs->anim_us + rs->build_us;
+        uint32_t cpu_side = wait_us + rs->anim_us + rs->build_us + hud_us;
         uint32_t submit_us = render_us > cpu_side ? render_us - cpu_side : 0;
         frame_timing_t timing = {
             .frame_us = frame_us,
@@ -151,6 +162,7 @@ int main(void)
             .anim_us = rs->anim_us,
             .build_us = rs->build_us,
             .submit_us = submit_us,
+            .hud_us = hud_us,
             .drawn_bugs = rs->drawn_bugs,
             .skeletons = rs->skeletons,
         };

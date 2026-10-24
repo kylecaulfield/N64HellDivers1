@@ -17,7 +17,7 @@ static struct {
     int frame;           // frames into the current level
     uint32_t drop_start; // dropped-tick counter when measuring began
     // Sums (and maxima) over the measured frames.
-    uint64_t frame_us, cpu_us, sim_us, anim_us, build_us, submit_us, rdp_us, gpu_us;
+    uint64_t frame_us, cpu_us, sim_us, anim_us, build_us, submit_us, hud_us, rdp_us, gpu_us;
     uint64_t phase_us[TIMED_PHASES];
     uint32_t frame_max, cpu_max, enemies, drawn, projectiles, particles;
     uint32_t rdp_n, gpu_n;
@@ -26,7 +26,7 @@ static struct {
 
 static void reset_sums(void)
 {
-    b.frame_us = b.cpu_us = b.sim_us = b.anim_us = b.build_us = b.submit_us = b.rdp_us = b.gpu_us = 0;
+    b.frame_us = b.cpu_us = b.sim_us = b.anim_us = b.build_us = b.submit_us = b.hud_us = b.rdp_us = b.gpu_us = 0;
     for (int i = 0; i < TIMED_PHASES; i++)
         b.phase_us[i] = 0;
     b.frame_max = b.cpu_max = b.enemies = b.drawn = b.projectiles = b.particles = 0;
@@ -77,11 +77,11 @@ static void report(const tickclock_t *clock)
     unsigned long fa = avg(b.frame_us, n);
     unsigned long fps100 = fa ? 100000000ul / fa : 0;
     debugf("BENCH level=%u enemies=%lu drawn=%lu fps=%lu.%02lu frame_avg=%lu frame_max=%lu "
-           "cpu_avg=%lu cpu_max=%lu sim=%lu ph=%s anim=%lu build=%lu submit=%lu "
+           "cpu_avg=%lu cpu_max=%lu sim=%lu ph=%s anim=%lu build=%lu submit=%lu hud=%lu "
            "rdp=%ld gpu_done=%ld drop=%lu proj=%lu fx=%lu\n",
            LEVELS[b.level], avg(b.enemies, n), avg(b.drawn, n), fps100 / 100, fps100 % 100,
            fa, (unsigned long)b.frame_max, avg(b.cpu_us, n), (unsigned long)b.cpu_max, avg(b.sim_us, n), ph,
-           avg(b.anim_us, n), avg(b.build_us, n), avg(b.submit_us, n),
+           avg(b.anim_us, n), avg(b.build_us, n), avg(b.submit_us, n), avg(b.hud_us, n),
            b.rdp_n ? (long)avg(b.rdp_us, b.rdp_n) : -1L, b.gpu_n ? (long)avg(b.gpu_us, b.gpu_n) : -1L,
            (unsigned long)(clock->dropped_ticks - b.drop_start),
            avg(b.projectiles, n), avg(b.particles, n));
@@ -111,6 +111,7 @@ void bench_frame(sim_t *sim, const frame_timing_t *t, const tickclock_t *clock)
         b.anim_us += t->anim_us;
         b.build_us += t->build_us;
         b.submit_us += t->submit_us;
+        b.hud_us += t->hud_us;
         if (t->frame_us > b.frame_max)
             b.frame_max = t->frame_us;
         if (t->cpu_us > b.cpu_max)

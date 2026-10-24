@@ -1,6 +1,7 @@
 #include "bench.h"
 #include "calldown.h"
 #include "hud.h"
+#include "mission.h"
 #include "overlay.h"
 #include "render.h"
 #include "weapons.h"
@@ -38,14 +39,15 @@ static void player_panel(const sim_t *sim, int idx, int x, int y)
         bar(x + 26, y + 5, 70, 2, 1.0f - (float)p->reload_timer / (float)def->reload_ticks,
             RGBA32(220, 220, 220, 0xFF));
 
+    // Few text calls: each one is costly for the RSP (see render.c).
     rdpq_text_printf(NULL, FONT, x, y, "P%d", idx + 1);
-    rdpq_text_printf(NULL, FONT, x + 102, y, "%s %d/%d", def->name, w->mag, w->reserve);
     const char *status = sim->settings.scheme[idx] == SCHEME_B ? "CONTROLS B" : "CONTROLS A";
     if (p->reload_timer)
         status = "RELOADING";
     else if (w->mag == 0)
         status = w->reserve ? "RELOAD (B)" : "NO AMMO";
-    rdpq_text_printf(NULL, FONT, x + 102, y + 11, "%s", status);
+    rdpq_text_printf(&(rdpq_textparms_t){ .line_spacing = 3 }, FONT, x + 102, y, "%s %d/%d\n%s",
+                     def->name, w->mag, w->reserve, status);
 }
 
 // A code as arrows for rdpq_text ("^" must be written "^^"), the first
@@ -123,13 +125,51 @@ static void beacon_labels(const sim_t *sim)
     }
 }
 
+// What the squad should be doing, under the top line.
+static void objective_line(const sim_t *sim)
+{
+    const mission_t *m = &sim->mission;
+    rdpq_textparms_t centre = { .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_TITLE };
+    switch (m->phase) {
+    case MISSION_DROP:
+        rdpq_text_printf(&centre, FONT, 0, 30, "DROPPING IN");
+        break;
+    case MISSION_OBJECTIVE: {
+        // Zone names in their marker colours, via inline style escapes.
+        char zone[MISSION_ZONES][20];
+        for (int z = 0; z < MISSION_ZONES; z++) {
+            int style = z ? STYLE_ZONE_B : STYLE_TITLE;
+            if (m->zones[z].captured)
+                snprintf(zone[z], sizeof(zone[z]), "^%02X%c^%02X HELD", style, 'A' + z, STYLE_GOOD);
+            else
+                snprintf(zone[z], sizeof(zone[z]), "^%02X%c^00 %d%%", style, 'A' + z,
+                         m->zones[z].held * 100 / mission_capture_ticks(sim));
+        }
+        rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER }, FONT, 0, 30,
+                         "HOLD THE ZONES   %s^00   %s", zone[0], zone[1]);
+        break;
+    }
+    case MISSION_EXTRACT:
+        rdpq_text_printf(&centre, FONT, 0, 30, "GO TO THE LZ AND CALL EXTRACTION");
+        break;
+    case MISSION_HOLD: {
+        int sec = m->timer / SIM_HZ + 1;
+        rdpq_text_printf(&centre, FONT, 0, 30, "HOLD OUT  -  DROPSHIP IN %d:%02d", sec / 60, sec % 60);
+        break;
+    }
+    case MISSION_BOARDING:
+        rdpq_text_printf(&centre, FONT, 0, 30, "DROPSHIP DOWN  -  GET TO THE LZ");
+        break;
+    }
+}
+
 static void squad_notice(const sim_t *sim)
 {
     rdpq_textparms_t centre = { .width = 320, .align = ALIGN_CENTER };
     const player_t *p1 = &sim->players[0];
     if (sim->squad == SQUAD_LOST)
         rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_WARN },
-                         FONT, 0, 110, "SQUAD LOST  -  RESTARTING IN %d", sim->squad_timer / SIM_HZ + 1);
+                         FONT, 0, 110, "SQUAD LOST  -  MISSION FAILED IN %d", sim->squad_timer / SIM_HZ + 1);
     else if (sim->squad == SQUAD_DOWN)
         rdpq_text_printf(&centre, FONT, 0, 110, "SQUAD DOWN  -  EMERGENCY REINFORCE IN %d",
                          sim->squad_timer / SIM_HZ + 1);
@@ -141,15 +181,15 @@ void hud_draw(const sim_t *sim, bool paused)
 {
     player_panel(sim, 0, 12, 214);
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 296, .align = ALIGN_RIGHT }, FONT, 12, 16,
-                     "WAVE %u  KILLS %lu  BUGS %u", sim->waves.number, (unsigned long)sim->kills,
-                     sim->counts.enemies);
+                     "^%02XREINF %u^00     WAVE %u  KILLS %lu  BUGS %u",
+                     sim->reinforcements ? STYLE_NORMAL : STYLE_WARN, sim->reinforcements,
+                     sim->waves.number, (unsigned long)sim->kills, sim->counts.enemies);
     const char *bench = bench_status();
     if (bench)
-        rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER }, FONT, 0, 30,
+        rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER }, FONT, 0, 42,
                          "%s", bench);
 
-    rdpq_text_printf(&(rdpq_textparms_t){ .style_id = sim->reinforcements ? STYLE_NORMAL : STYLE_WARN },
-                     FONT, 12, 16, "REINF %u", sim->reinforcements);
+    objective_line(sim);
     beacon_labels(sim);
     code_panel(sim, 0);
     squad_notice(sim);

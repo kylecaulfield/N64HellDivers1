@@ -86,9 +86,11 @@ static void spawn_group(sim_t *s)
 
 void waves_update(sim_t *s)
 {
-    if (!s->settings.waves)
+    if (!s->settings.waves || s->mission.phase == MISSION_DROP)
         return;
     waves_t *w = &s->waves;
+    // Holding out for the dropship: shorter breaks, groups more often.
+    int speedup = s->mission.phase == MISSION_HOLD || s->mission.phase == MISSION_BOARDING ? HOLD_WAVE_SPEEDUP : 1;
     if (w->timer) {
         w->timer--;
         return;
@@ -99,9 +101,9 @@ void waves_update(sim_t *s)
     }
     if (remaining_total(w) > 0) {
         spawn_group(s);
-        w->timer = WAVE_GROUP_INTERVAL;
+        w->timer = (uint16_t)(WAVE_GROUP_INTERVAL / speedup);
     } else if (s->counts.enemies <= w->total / WAVE_CLEAR_DIVISOR) {
         w->state = WAVE_BREAK;
-        w->timer = WAVE_BREAK_TICKS;
+        w->timer = (uint16_t)(WAVE_BREAK_TICKS / speedup);
     }
 }

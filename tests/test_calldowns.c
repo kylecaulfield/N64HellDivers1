@@ -3,28 +3,6 @@
 #include "test_util.h"
 #include "weapons.h"
 
-static const uint16_t CODE_BUTTON[] = {
-    [CODE_UP] = SIM_BTN_CUP, [CODE_DOWN] = SIM_BTN_CDOWN,
-    [CODE_LEFT] = SIM_BTN_CLEFT, [CODE_RIGHT] = SIM_BTN_CRIGHT,
-};
-
-// Hold R, press each input of `type`'s code on its own tick, then release R
-// (the throw happens on the release tick).
-static void enter_code(sim_t *s, sim_input_t in[SIM_MAX_PLAYERS], int port, calldown_type_t type)
-{
-    const calldown_def_t *d = &calldown_defs[type];
-    for (int k = 0; k < d->code_len; k++) {
-        in[port].held = SIM_BTN_R | CODE_BUTTON[d->code[k]];
-        in[port].pressed = CODE_BUTTON[d->code[k]];
-        sim_step(s, in);
-        in[port].held = SIM_BTN_R;
-        in[port].pressed = 0;
-        sim_step(s, in);
-    }
-    in[port].held = 0;
-    sim_step(s, in);
-}
-
 static const beacon_t *find_beacon(const sim_t *s, calldown_type_t type)
 {
     for (int i = 0; i < SIM_MAX_BEACONS; i++)

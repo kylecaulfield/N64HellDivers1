@@ -4,6 +4,7 @@
 #include "collide.h"
 #include "enemy.h"
 #include "grid.h"
+#include "mission.h"
 #include "sim_internal.h"
 #include "weapons.h"
 
@@ -48,7 +49,7 @@ void sim_kill_player(sim_t *s, int port)
 void player_damage(sim_t *s, int idx, float amount)
 {
     player_t *p = &s->players[idx];
-    if (!sim_player_alive(p) || s->settings.god_mode)
+    if (!sim_player_alive(p) || p->state == PSTATE_DROPPING || s->settings.god_mode)
         return;
     p->hp -= amount;
     sim_push_event(s, EV_PLAYER_HURT, (uint8_t)idx, p->pos, p->facing);
@@ -61,6 +62,7 @@ void player_damage(sim_t *s, int idx, float amount)
         p->reload_timer = 0;
         p->vel = v2(0.0f, 0.0f);
         p->code = (code_entry_t){0};
+        s->mission.stats.deaths++;
         sim_push_event(s, EV_PLAYER_DIED, (uint8_t)idx, p->pos, p->facing);
     }
 }
@@ -75,6 +77,14 @@ static void update_one(sim_t *s, int idx, const player_intent_t *in)
     bool can_act = false;
     switch (p->state) {
     case PSTATE_DEAD:
+        return;
+
+    case PSTATE_DROPPING:
+        // The pod lands on whatever is below (the rider is still immune).
+        if (--p->state_timer == 0) {
+            sim_explode(s, p->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
+            p->state = PSTATE_NORMAL;
+        }
         return;
 
     case PSTATE_DIVING:
@@ -140,7 +150,7 @@ void players_update(sim_t *s, const player_intent_t intents[SIM_MAX_PLAYERS])
     // and the shared camera's leash keeps everyone on screen.
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         player_t *p = &s->players[i];
-        if (!sim_player_alive(p))
+        if (!sim_player_alive(p) || p->state == PSTATE_DROPPING) // still in the air
             continue;
         const float reach = PLAYER_RADIUS + ENEMY_MAX_RADIUS;
         grid_iter_t it;

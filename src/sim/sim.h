@@ -55,6 +55,7 @@ typedef enum {
     PSTATE_DIVING,  // committed lunge, no shooting
     PSTATE_PRONE,   // getting up after a dive
     PSTATE_DEAD,
+    PSTATE_DROPPING, // riding a pod down at the start of the mission: can't act or be hurt
 } player_state_t;
 
 typedef struct {
@@ -77,6 +78,7 @@ typedef enum {
     CALLDOWN_AIRSTRIKE,
     CALLDOWN_BARRAGE,
     CALLDOWN_SENTRY,
+    CALLDOWN_EXTRACTION,  // once the objective is done, from inside the LZ
     CALLDOWN_COUNT
 } calldown_type_t;
 
@@ -277,11 +279,55 @@ typedef struct {
     float   yaw;     // visual only
 } obstacle_t;
 
+#define MISSION_ZONES 2
+
 typedef struct {
     vec2       min, max;
     obstacle_t obstacles[SIM_MAX_OBSTACLES];
     int        obstacle_count;
+    // Mission sites, placed before the rocks, which keep clear of them. The
+    // drop zone is the origin.
+    vec2       zones[MISSION_ZONES];
+    vec2       lz;
 } arena_t;
+
+// --- Mission -----------------------------------------------------------------------
+
+typedef enum {
+    MISSION_DROP,       // players riding pods down
+    MISSION_OBJECTIVE,  // hold both zones
+    MISSION_EXTRACT,    // objective done: call extraction from inside the LZ
+    MISSION_HOLD,       // extraction called: survive until the dropship lands
+    MISSION_BOARDING,   // dropship down: living players get into the LZ
+    MISSION_SUCCESS,
+    MISSION_FAILED,
+} mission_phase_t;
+
+typedef struct {
+    uint16_t held;        // ticks held so far
+    bool     captured;
+    uint8_t  players_in;  // this tick
+    uint8_t  bugs_in;
+} zone_state_t;
+
+typedef struct {
+    uint32_t ticks;                    // mission time
+    uint16_t kills[ENEMY_TYPE_COUNT];
+    uint32_t shots;                    // player trigger pulls (a shotgun blast is one)
+    uint32_t hits;                     // player bullets that hit a bug
+    uint16_t friendly_hits;            // player bullets that hit a teammate
+    uint16_t deaths;
+    uint16_t reinforcements;           // used
+    uint16_t calldowns;                // beacons thrown
+} mission_stats_t;
+
+typedef struct {
+    uint8_t         phase;    // mission_phase_t
+    uint16_t        timer;    // ticks left in DROP / HOLD
+    zone_state_t    zones[MISSION_ZONES];
+    uint8_t         extracted; // bit per player aboard the dropship
+    mission_stats_t stats;
+} mission_t;
 
 typedef struct {
     vec2  target;     // ground point the camera looks at (screen centre)
@@ -308,6 +354,9 @@ typedef enum {
     EV_CALLDOWN,      // pos = beacon, a = calldown type (it arrived)
     EV_PICKUP,        // pos = pickup, a = pickup type
     EV_REINFORCED,    // pos = drop point, a = player index
+    EV_ZONE_CAPTURED, // pos = zone, a = zone index
+    EV_MISSION,       // a = the mission_phase_t just entered
+    EV_EXTRACTED,     // pos = player, a = player index (boarded the dropship)
 } sim_event_type_t;
 
 typedef enum {
@@ -335,6 +384,7 @@ typedef struct {
     bool     waves;                   // wave spawner on
     bool     force_max_zoom;          // stress testing: camera fully zoomed out
     bool     free_calldowns;          // debug: no cooldowns
+    bool     quick_mission;           // debug: capture and hold times divided by QUICK_MISSION_DIV
     uint16_t enemy_cap;               // <= SIM_MAX_ENEMIES
     uint16_t flow_budget;             // flow-field cells expanded per tick
 } sim_settings_t;
@@ -348,7 +398,7 @@ typedef enum {
     SIM_PHASE_CROWD,        // separation, rock collision, grid rebuild
     SIM_PHASE_PROJECTILES,
     SIM_PHASE_CALLDOWNS,    // beacons, strikes, turrets, pickups, reinforcements
-    SIM_PHASE_SPAWN,
+    SIM_PHASE_SPAWN,        // spawner, mission, camera, counts
     SIM_PHASE_END,
     SIM_PHASE_COUNT
 } sim_phase_t;
@@ -386,6 +436,7 @@ typedef struct {
     uint8_t        reinforcements;    // shared pool
     uint8_t        squad;             // squad_state_t
     uint16_t       squad_timer;       // SQUAD_DOWN / SQUAD_LOST countdown
+    mission_t      mission;
     sim_event_t    events[SIM_MAX_EVENTS];
     uint16_t       event_count;       // cleared by the consumer, see sim_clear_events
     uint16_t       events_dropped;

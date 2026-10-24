@@ -9,6 +9,7 @@
 #include "enemy.h"
 #include "flow.h"
 #include "grid.h"
+#include "mission.h"
 #include "sim_internal.h"
 #include "waves.h"
 
@@ -26,6 +27,7 @@ void sim_init(sim_t *s, uint32_t seed)
     waves_reset(s);
     // Player 1 drops in at the start; joining arrives in M5.
     sim_spawn_player(s, 0, v2(0.0f, 0.0f));
+    mission_init(s);
     camera_reset(s);
     sim_update_counts(s);
     grid_build(s);
@@ -85,6 +87,9 @@ void sim_update_counts(sim_t *s)
 
 void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS])
 {
+    if (mission_over(s))
+        return; // the world stops behind the results screen
+
     // Everything this tick reads the enemy list and grid built here
     // (timed as part of the players phase).
     sim_mark(s, SIM_PHASE_PLAYERS);
@@ -122,6 +127,7 @@ void sim_step(sim_t *s, const sim_input_t inputs[SIM_MAX_PLAYERS])
 
     sim_mark(s, SIM_PHASE_SPAWN);
     waves_update(s);
+    mission_update(s);
     camera_update(s);
     sim_update_counts(s);
     s->tick++;

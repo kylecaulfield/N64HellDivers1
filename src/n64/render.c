@@ -2,6 +2,7 @@
 #include "camera.h"
 #include "fx.h"
 #include "gpu_timing.h"
+#include "mission.h"
 
 #include <libdragon.h>
 #include <stdio.h>
@@ -28,12 +29,12 @@
 enum {
     MDL_SOLDIER, MDL_SKITTER, MDL_GNASHER, MDL_BULWARK,
     MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND,
-    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_COUNT
+    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_DROPSHIP, MDL_COUNT
 };
 
 static const char *const model_names[MDL_COUNT] = {
     "soldier", "skitter", "gnasher", "bulwark", "rock_a", "rock_b", "rock_c", "ground",
-    "beacon", "turret", "crate", "mgcase", "pod",
+    "beacon", "turret", "crate", "mgcase", "pod", "dropship",
 };
 
 // What falls from orbit for each calldown (-1: nothing, it is a strike), and
@@ -41,12 +42,13 @@ static const char *const model_names[MDL_COUNT] = {
 static const int8_t drop_model[CALLDOWN_COUNT] = {
     [CALLDOWN_REINFORCE] = MDL_POD, [CALLDOWN_RESUPPLY] = MDL_CRATE,
     [CALLDOWN_MACHINE_GUN] = MDL_MGCASE, [CALLDOWN_AIRSTRIKE] = -1,
-    [CALLDOWN_BARRAGE] = -1, [CALLDOWN_SENTRY] = MDL_TURRET,
+    [CALLDOWN_BARRAGE] = -1, [CALLDOWN_SENTRY] = MDL_TURRET, [CALLDOWN_EXTRACTION] = -1,
 };
 static const uint8_t beacon_rgb[CALLDOWN_COUNT][3] = {
     [CALLDOWN_REINFORCE] = { 90, 220, 255 }, [CALLDOWN_RESUPPLY] = { 120, 255, 120 },
     [CALLDOWN_MACHINE_GUN] = { 255, 200, 60 }, [CALLDOWN_AIRSTRIKE] = { 255, 70, 50 },
     [CALLDOWN_BARRAGE] = { 255, 120, 40 }, [CALLDOWN_SENTRY] = { 255, 240, 90 },
+    [CALLDOWN_EXTRACTION] = { 230, 240, 255 },
 };
 
 typedef struct {
@@ -65,12 +67,12 @@ static struct {
 static render_stats_t stats;
 
 #define MODEL_SCALE (WORLD_SCALE / 64.0f)
-#define MAX_PROPS (SIM_MAX_BEACONS * 2 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS)
+#define MAX_PROPS (SIM_MAX_BEACONS * 2 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS + SIM_MAX_PLAYERS + 1)
 #define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES + MAX_PROPS)
 #define TELEGRAPH_DOTS 16
 #define MAX_PARTICLES (SIM_MAX_PROJECTILES * 2 + FX_MAX + SIM_MAX_PLAYERS * 3 + \
                        SIM_MAX_BEACONS * (4 + TELEGRAPH_DOTS) + SIM_MAX_STRIKES * TELEGRAPH_DOTS + \
-                       SIM_MAX_PICKUPS + 4)
+                       SIM_MAX_PICKUPS + (MISSION_ZONES + 1) * (TELEGRAPH_DOTS + 9) + 4)
 #define PARTICLE_PAIRS (MAX_PARTICLES / 2)
 #define CULL_PAD 2.0f
 
@@ -273,6 +275,75 @@ static void build_calldowns(const sim_t *sim, pbuild_t *pb)
     }
 }
 
+// Site colours, matching the HUD's text styles for the zone names.
+static const uint8_t site_rgb[MISSION_ZONES + 1][3] = {
+    { 232, 150, 40 },  // zone A (STYLE_TITLE)
+    { 80, 220, 255 },  // zone B (STYLE_ZONE_B)
+    { 240, 240, 255 }, // LZ
+};
+
+// A light column over a site, and when the site is off screen a chevron at
+// the edge of the visible ground pointing at it. Particles, not text: every
+// rdpq_text call costs the RSP far more than a few particles.
+static void site_marker(const sim_t *sim, pbuild_t *pb, vec2 pos, const uint8_t *c)
+{
+    for (int k = 0; k < 5; k++)
+        pb_add(pb, pos.x, 0.8f + 0.8f * k, -pos.y, 30 - 4 * k, c[0], c[1], c[2]);
+
+    // The visible ground is a trapezoid: use its narrow bottom width, and
+    // keep clear of the HUD rows at the top and bottom of the screen.
+    const camera_t *cam = &sim->camera;
+    cam_extent_t e = camera_extent();
+    vec2 mn = v2(cam->target.x - cam->dist * e.half_w + 1.5f, cam->target.y - cam->dist * e.below + 3.0f);
+    vec2 mx = v2(cam->target.x + cam->dist * e.half_w - 1.5f, cam->target.y + cam->dist * e.above - 4.0f);
+    if (in_rect(pos, mn, mx))
+        return;
+    vec2 at = v2(clampf(pos.x, mn.x, mx.x), clampf(pos.y, mn.y, mx.y));
+    vec2 dir = v2_norm_or(v2_sub(pos, at), v2(0.0f, 1.0f)), side = v2(-dir.y, dir.x);
+    vec2 pts[4] = {
+        v2_add(at, v2_scale(dir, 0.7f)),
+        v2_add(at, v2_scale(side, 0.6f)),
+        v2_sub(at, v2_scale(side, 0.6f)),
+        v2_sub(at, v2_scale(dir, 0.4f)),
+    };
+    for (int k = 0; k < 4; k++)
+        pb_add(pb, pts[k].x, 0.5f, -pts[k].y, k == 3 ? 16 : 26, c[0], c[1], c[2]);
+}
+
+// Objective zones as rings that light up with their progress (green when
+// captured, red while bugs hold them), and the LZ, blinking while it waits
+// for the extraction call. Sites still to visit get markers.
+static void build_mission(const sim_t *sim, pbuild_t *pb)
+{
+    const mission_t *m = &sim->mission;
+    bool blink = (sim->tick / 8) & 1;
+    if (m->phase <= MISSION_OBJECTIVE) {
+        for (int z = 0; z < MISSION_ZONES; z++) {
+            const zone_state_t *zs = &m->zones[z];
+            vec2 c = sim->arena.zones[z];
+            int lit = zs->held * TELEGRAPH_DOTS / mission_capture_ticks(sim);
+            for (int k = 0; k < TELEGRAPH_DOTS; k++) {
+                float a = 6.2832f * (float)k / TELEGRAPH_DOTS;
+                uint8_t r = 150, g = 150, b = 150;
+                if (zs->captured)
+                    r = 90, g = 240, b = 110;
+                else if (zs->players_in && zs->bugs_in)
+                    r = blink ? 255 : 150, g = 60, b = 50;
+                else if (k < lit)
+                    r = 255, g = 190, b = 60;
+                pb_add(pb, c.x + fm_cosf(a) * ZONE_RADIUS, 0.1f, -(c.y + fm_sinf(a) * ZONE_RADIUS), 16, r, g, b);
+            }
+            if (m->phase == MISSION_OBJECTIVE && !zs->captured)
+                site_marker(sim, pb, c, site_rgb[z]);
+        }
+    }
+    const uint8_t *lz = site_rgb[MISSION_ZONES];
+    if (m->phase >= MISSION_EXTRACT && !(m->phase == MISSION_EXTRACT && blink))
+        pb_ring(pb, sim->arena.lz, LZ_RADIUS, lz[0], lz[1], lz[2]);
+    if (m->phase >= MISSION_EXTRACT && !mission_over(sim))
+        site_marker(sim, pb, sim->arena.lz, lz);
+}
+
 // Opaque particles from index 0, then (from *glow_start, an even index) the
 // semi-transparent ones. Returns the opaque count.
 static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec2 vmax,
@@ -303,6 +374,7 @@ static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec
     }
 
     build_calldowns(sim, &pb);
+    build_mission(sim, &pb);
 
     const fx_particle_t *fx = fx_particles();
     for (int pass = 0; pass < 2; pass++) {
@@ -361,6 +433,23 @@ static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 
             continue;
         prop_model[n - first] = k->type == PICKUP_RESUPPLY ? MDL_CRATE : MDL_MGCASE;
         unit_matrix(&dyn[n++], k->pos, 0.0f, v2(0.0f, 1.0f), 0.0f, 1.0f);
+    }
+    // The squad's pods coming down at the start of the mission.
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!p->active || p->state != PSTATE_DROPPING)
+            continue;
+        float k = (float)p->state_timer / DROP_IN_TICKS;
+        prop_model[n - first] = MDL_POD;
+        unit_matrix(&dyn[n++], p->pos, 40.0f * k * k, v2(0.0f, 1.0f), 0.0f, 1.0f);
+    }
+    // The dropship: descending at the end of the hold, then down on the LZ.
+    const mission_t *m = &sim->mission;
+    bool landing = m->phase == MISSION_HOLD && m->timer <= DROPSHIP_DESCENT;
+    if (landing || m->phase == MISSION_BOARDING || m->phase == MISSION_SUCCESS) {
+        float k = landing ? (float)m->timer / DROPSHIP_DESCENT : 0.0f;
+        prop_model[n - first] = MDL_DROPSHIP;
+        unit_matrix(&dyn[n++], sim->arena.lz, 30.0f * k * k, v2(0.0f, 1.0f), 0.0f, 1.0f);
     }
     return n;
 }
@@ -424,7 +513,7 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     int player_idx[SIM_MAX_PLAYERS];
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const player_t *p = &sim->players[i];
-        if (!sim_player_alive(p))
+        if (!sim_player_alive(p) || p->state == PSTATE_DROPPING) // pods are props
             continue;
         float pitch = 0.0f, lift = 0.0f;
         if (p->state == PSTATE_DIVING) {
@@ -456,7 +545,7 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     stats.drawn_bugs = (uint16_t)(ndyn - first_bug);
     int first_prop = ndyn;
     ndyn = build_props(sim, dyn, ndyn, vmin, vmax);
-    int glow_start, nglow;
+    int glow_start = 0, nglow = 0;
     int npart = build_particles(sim, pbuf, vmin, vmax, &glow_start, &nglow);
     uint64_t t1 = get_ticks();
     update_poses(sim, used, anim_dt);

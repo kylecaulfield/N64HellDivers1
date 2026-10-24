@@ -11,7 +11,9 @@
 
 // Text styles on the builtin debug font, registered by overlay_init and used
 // by the HUD and the debug menu too.
-enum { STYLE_NORMAL, STYLE_WARN, STYLE_TITLE, STYLE_DIM, STYLE_GOOD };
+// Zone A is shown in STYLE_TITLE's amber, zone B in STYLE_ZONE_B's cyan
+// (render.c draws their markers in the same colours).
+enum { STYLE_NORMAL, STYLE_WARN, STYLE_TITLE, STYLE_DIM, STYLE_GOOD, STYLE_ZONE_B };
 
 // Sim phases timed through sim_t.mark: players (and the per-tick enemy list
 // and grid), flow, enemies (AI and movement), crowd (separation, rocks),

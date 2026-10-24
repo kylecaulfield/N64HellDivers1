@@ -1,5 +1,6 @@
 #include "menu.h"
 #include "bench.h"
+#include "mission.h"
 #include "overlay.h"
 
 #include <libdragon.h>
@@ -18,6 +19,8 @@ enum {
     ITEM_KILL_ALL,
     ITEM_FREE_CALLDOWNS,
     ITEM_KILL_P1,
+    ITEM_QUICK_MISSION,
+    ITEM_COMPLETE_OBJECTIVE,
     ITEM_CAP,
     ITEM_FLOW,
     ITEM_BENCH,
@@ -109,6 +112,13 @@ static void activate(sim_t *sim, int item, int dir)
         sim_kill_player(sim, 0);
         menu_toggle(); // watch the reinforce happen
         break;
+    case ITEM_QUICK_MISSION:
+        st->quick_mission = !st->quick_mission;
+        break;
+    case ITEM_COMPLETE_OBJECTIVE:
+        mission_complete_objective(sim);
+        menu_toggle();
+        break;
     case ITEM_CAP: {
         int cap = (int)st->enemy_cap + (dir < 0 ? -8 : 8);
         if (cap < 8)
@@ -164,7 +174,7 @@ void menu_draw(const sim_t *sim)
     if (!open)
         return;
     const sim_settings_t *st = &sim->settings;
-    const int x = 56, y0 = 30, lh = 12;
+    const int x = 56, y0 = 24, lh = 11; // 18 items + title fit in 240 lines
 
     rdpq_set_mode_fill(RGBA32(10, 12, 18, 0xFF));
     rdpq_fill_rectangle(x - 10, y0 - 22, x + 218, y0 + (ITEM_COUNT + 1) * lh + 4);
@@ -185,6 +195,8 @@ void menu_draw(const sim_t *sim)
         case ITEM_KILL_ALL: rdpq_text_printf(NULL, FONT, x, y, "%s Kill all bugs", m); break;
         case ITEM_FREE_CALLDOWNS: rdpq_text_printf(NULL, FONT, x, y, "%s No calldown cooldowns: %s", m, on_off(st->free_calldowns)); break;
         case ITEM_KILL_P1:  rdpq_text_printf(NULL, FONT, x, y, "%s Kill P1 (test reinforce)", m); break;
+        case ITEM_QUICK_MISSION: rdpq_text_printf(NULL, FONT, x, y, "%s Quick mission (1/%d times): %s", m, QUICK_MISSION_DIV, on_off(st->quick_mission)); break;
+        case ITEM_COMPLETE_OBJECTIVE: rdpq_text_printf(NULL, FONT, x, y, "%s Complete the objective", m); break;
         case ITEM_CAP:      rdpq_text_printf(NULL, FONT, x, y, "%s Enemy cap: %u <>", m, st->enemy_cap); break;
         case ITEM_FLOW:     rdpq_text_printf(NULL, FONT, x, y, "%s Flow budget: %u <>", m, st->flow_budget); break;
         case ITEM_BENCH:    rdpq_text_printf(NULL, FONT, x, y, "%s Run stress bench (72 s)", m); break;

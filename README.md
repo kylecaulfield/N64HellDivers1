@@ -9,13 +9,16 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M3**: calldowns (Reinforce, Resupply, Machine Gun,
-Airstrike, Orbital Barrage, Sentry) entered as directional codes, friendly
-fire on everything, and death that lasts until a teammate reinforces you from
-a shared pool. Built on M2's swarm: waves of all three bug types, a shared
-flow field, a uniform grid, skinned bugs sharing pose slots, bots for players
-2-4, and the stress bench whose hardware numbers set the enemy cap (currently
-64, one constant: `SIM_ENEMY_CAP_DEFAULT` in `src/sim/tuning.h`).
+**Status: milestone M4**: the full mission loop. The squad drops in by pod,
+holds two zones against the swarm, calls the dropship at the landing zone,
+survives a 75 s hold and boards; a results screen follows, and START begins
+a new mission. Built on M3's calldowns (Reinforce, Resupply, Machine Gun,
+Airstrike, Orbital Barrage, Sentry, now Extraction) entered as directional
+codes, friendly fire on everything, death until a teammate reinforces you from
+a shared pool, and M2's swarm: waves of all three bug types, a shared flow
+field, a uniform grid, skinned bugs sharing pose slots, bots for players 2-4,
+and the stress bench whose hardware numbers set the enemy cap (currently 64,
+one constant: `SIM_ENEMY_CAP_DEFAULT` in `src/sim/tuning.h`).
 
 ## Pinned dependencies
 
@@ -79,7 +82,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
-| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), then turns bots on and has one reinforce another, and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, then plays a quick mission (both zones, Extraction, the hold, boarding), checks the results screen, starts a new mission and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make BENCH=1` | `hivebreakers-bench.z64`: runs the stress bench by itself 2 s after boot (see below) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
@@ -144,6 +147,8 @@ value, B closes:
 | Kill P1 (test reinforce) | Kills player 1 even in god mode, and closes the menu |
 | Enemy cap | Live bug limit, in steps of 8 |
 | Flow budget | Flow-field cells expanded per tick (256-4096) |
+| Quick mission | Zone capture and the extraction hold take 1/5 of the time (6 s and 15 s) |
+| Complete the objective | Marks both zones held, so Extraction can be called; closes the menu |
 | Run stress bench | The bench below (72 s); closes the menu |
 | Stats overlay | Same as L + D-Up |
 
@@ -165,6 +170,7 @@ which blinks faster as it gets close and shows the seconds left.
 | Airstrike | `> ^ > v` | 45 s | 3 s | 5 bombs in a line along your throw |
 | Orbital Barrage | `> v v < ^ >` | 90 s | 5 s | 15 shells at random within 8 m over 6 s (the area is ringed in red) |
 | Sentry | `^ < v > ^` | 90 s | 4 s | Turret: shoots the nearest bug in 16 m, 200 rounds or 45 s |
+| Extraction | `> > ^ v` | 10 s | 2 s | Calls the dropship (see below). Only once both zones are held, from inside the landing zone |
 
 Cooldowns are per player and survive death. All of it is in
 `src/sim/calldown.c` (codes and timings) and `src/sim/tuning.h`.
@@ -177,8 +183,42 @@ on, teammates included. Bots hold fire when a teammate is in their line.
 **Death and reinforcements**: a dead player stays down until a teammate's
 Reinforce lands. The squad shares 5 reinforcements per mission (`REINF` at
 the top left). If the whole squad is down, an emergency reinforce lands
-after 5 s, using the pool. With the pool empty the squad is lost and the
-mission restarts after 5 s (M4 adds the results screen).
+after 5 s, using the pool. With the pool empty the squad is lost, and 5 s
+later the mission fails.
+
+## Mission
+
+1. **Drop-in.** Each trooper rides a pod down (2 s, immune while riding);
+   whatever is under a pod when it lands is crushed. Waves start after it.
+2. **Objective: hold the zones.** Two zones, **A** (amber) and **B** (cyan),
+   15-22 m from the drop point, ringed on the ground and marked by a light
+   column. When one is off screen a chevron at the edge of the view points to
+   it. A zone fills while at least one living trooper stands in it and no bug
+   is inside it (30 s in all). Progress pauses, never drains, when bugs get
+   in. The top line shows `HOLD THE ZONES   A 40%   B HELD`.
+3. **Extraction.** With both zones held, the landing zone (white ring and
+   marker) lights up. Anyone standing in it can call **Extraction**
+   (`> > ^ v`).
+4. **Hold out.** 75 s until the dropship lands (`DROPSHIP IN 1:02`); waves
+   come three times as fast. The dropship is seen coming down for the last
+   4 s.
+5. **Board.** Once it is down, every living trooper who reaches the landing
+   zone boards and leaves the field. The mission succeeds when no one living
+   is left on the ground (the dead don't hold it up, but they don't count as
+   extracted). If the squad is lost at any point, the mission fails.
+
+The **results screen** shows time, waves, kills by bug type, shots and hit
+rate, calldowns, deaths, reinforcements used, friendly hits and how many
+troopers were extracted. **START** begins a new mission on a new arena with
+the same settings. The same numbers go to the USB log once per mission:
+
+```
+RESULT build=5a122174 outcome=success time=103s waves=8 kills=131/66/6 shots=713 hits=596 calldowns=7 deaths=2 reinforced=2 friendly_hits=13 extracted=4/4
+```
+
+(`kills=` is skitters/gnashers/bulwarks; `shots`, `hits` and
+`friendly_hits` count the troopers' own bullets: fired, hit a bug, hit a
+trooper.)
 
 ## Testing in an emulator
 
@@ -257,7 +297,7 @@ Times are microseconds per frame, averaged over the 4 s (`_max` is the worst
 frame). `rdp`/`gpu_done` are -1 where the hardware counter is unavailable
 (ares). The highest level that keeps `fps` at 29.9 with `drop=0` is the
 ceiling; the enemy cap goes somewhat below it, leaving room for calldowns,
-audio and the objective (M3+).
+the mission and audio (M6).
 
 ## Project layout
 
@@ -266,9 +306,11 @@ src/sim/        pure-C simulation core: no libdragon includes, builds on the hos
                 controls, weapons, player, enemy, projectile, arena, camera,
                 grid (spatial hash), flow (flow field), waves, bot,
                 calldown (codes, beacons, strikes, turrets, pickups,
-                reinforcements, explosions), tuning.h
+                reinforcements, explosions), mission (drop-in, zones,
+                extraction, boarding, stats), tuning.h
 src/n64/        thin N64 layer: boot checks, input, rendering, effects, HUD,
-                debug menu, overlay, timing, stress bench, autotest bot
+                results screen, debug menu, overlay, timing, stress bench,
+                autotest bot
 tests/          host unit tests for src/sim (make test)
 tools/          toolchain setup, placeholder model generator, deploy scripts
 assets/models/  drop-in model overrides (see assets/models/README.md)

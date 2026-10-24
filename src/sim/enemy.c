@@ -114,6 +114,7 @@ void enemy_damage(sim_t *s, int idx, float amount, vec2 hit_pos, vec2 shot_dir)
         e->active = false;
         s->counts.enemies--;
         s->kills++;
+        s->mission.stats.kills[e->type]++;
         sim_push_event(s, EV_ENEMY_DIED, e->type, e->pos, e->facing);
     }
 }

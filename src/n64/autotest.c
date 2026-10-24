@@ -5,6 +5,7 @@
 #include <libdragon.h>
 
 #include "calldown.h"
+#include "mission.h"
 
 // Phases, in rendered frames (~30 per second).
 #define F_WALK        60
@@ -18,7 +19,8 @@
 #define F_PICKUPS     1200  // walk to the MG case, then the crate
 #define F_DIE         1350  // solo death: emergency reinforce after 5 s
 #define F_BOTS        1520  // bots on; one dies and another reinforces it
-#define F_END         1720
+#define F_MISSION     1720  // quick mission: both zones, extraction, results, new mission
+#define F_DEADLINE    6000  // FAIL if the mission loop hasn't finished by now
 
 static const struct {
     uint32_t frame;
@@ -37,6 +39,10 @@ static const uint16_t CODE_BTN[] = {
 
 static uint32_t shots_seen, bombs, shells, pickups, throws, turret_shots;
 static bool shotgun_seen, mg_seen, p1_reinforced, bot_reinforced;
+static uint32_t zones_captured, extracted, extract_f0, results_frame, contested;
+static bool hold_seen, success_seen, new_mission, done;
+static uint32_t m3_kills;
+static unsigned m3_wave, m3_reinforcements;
 
 static int nearest_enemy(const sim_t *sim, vec2 from)
 {
@@ -194,25 +200,75 @@ void autotest_input(input_frame_t *in, uint32_t frame, sim_t *sim)
             phase(frame, "P1 dies alone: emergency reinforce", sim);
             sim_kill_player(sim, 0);
         }
-    } else if (frame < F_END) {
+    } else if (frame < F_MISSION) {
         if (frame == F_BOTS) {
             phase(frame, "bots on; P3 dies and a bot reinforces it", sim);
             sim_set_bots(sim, true);
         } else if (frame == F_BOTS + 10) {
             sim_kill_player(sim, 2);
         }
-    } else if (frame == F_END) {
-        bool ok = sim->kills >= 5 && shots_seen > 50 && shotgun_seen && sim->waves.number >= 1 &&
-                  throws >= 5 && mg_seen && turret_shots > 0 && bombs >= AIRSTRIKE_BOMBS &&
-                  shells >= BARRAGE_SHELLS / 2 && pickups >= 2 && p1_reinforced && bot_reinforced &&
-                  sim->reinforcements == REINFORCE_POOL - 2;
+    } else if (!done && frame < F_DEADLINE && !new_mission) {
+        const mission_t *m = &sim->mission;
+        if (frame == F_MISSION) {
+            phase(frame, "quick mission: hold both zones, extract", sim);
+            sim->settings.quick_mission = true;
+            m3_kills = sim->kills;
+            m3_wave = sim->waves.number;
+            m3_reinforcements = sim->reinforcements;
+        }
+        if (mission_over(sim)) {
+            // Results screen: look at it for 2 s, then START.
+            if (!results_frame) {
+                results_frame = frame;
+                phase(frame, sim->mission.phase == MISSION_SUCCESS ? "results: success" : "results: failed", sim);
+            } else if (frame == results_frame + 60) {
+                in->pressed_any = SIM_BTN_START;
+            }
+        } else if (m->phase == MISSION_EXTRACT && mission_can_call_extraction(sim, 0)) {
+            if (!extract_f0)
+                extract_f0 = frame;
+            code_script(p, frame, extract_f0, CALLDOWN_EXTRACTION);
+        } else {
+            // Walk to the next zone (or the LZ), shooting the nearest bug
+            // with the C-buttons on the way.
+            vec2 dest = sim->arena.lz;
+            for (int z = MISSION_ZONES - 1; z >= 0; z--)
+                if (!m->zones[z].captured)
+                    dest = sim->arena.zones[z];
+            if (v2_dist2(dest, me->pos) > 1.0f)
+                stick_towards(p, v2_sub(dest, me->pos));
+            if (target >= 0)
+                p->held = cbuttons_towards(v2_norm_or(to, v2(0.0f, 1.0f)));
+            // A zone the swarm keeps contested for 10 s stalls the smoke
+            // test: clear the bugs (and say so).
+            bool stuck = false;
+            for (int z = 0; z < MISSION_ZONES; z++)
+                stuck |= m->phase == MISSION_OBJECTIVE && m->zones[z].players_in && m->zones[z].bugs_in;
+            contested = stuck ? contested + 1 : 0;
+            if (contested > 300) {
+                debugf("AUTOTEST zone contested for 10 s: clearing bugs\n");
+                sim_kill_all_enemies(sim);
+                contested = 0;
+            }
+        }
+    } else if (!done) {
+        // Checked after the new mission started, so the M3 numbers come from
+        // the snapshot taken when the mission part began.
+        done = true;
+        bool m3 = m3_kills >= 5 && shots_seen > 50 && shotgun_seen && m3_wave >= 1 && throws >= 5 && mg_seen &&
+                  turret_shots > 0 && bombs >= AIRSTRIKE_BOMBS && shells >= BARRAGE_SHELLS / 2 && pickups >= 2 &&
+                  p1_reinforced && bot_reinforced && m3_reinforcements == REINFORCE_POOL - 2;
+        bool m4 = zones_captured == MISSION_ZONES && hold_seen && success_seen && extracted >= 1 && new_mission &&
+                  !mission_over(sim);
         debugf("AUTOTEST %s: kills %lu, shots %lu, shotgun %d, wave %u, throws %lu, mg %d, turret shots %lu, "
-               "bombs %lu, shells %lu, pickups %lu, reinforced p1 %d bot %d, reinforcements %u, "
-               "bugs alive %u, dropped ticks see STATS\n",
-               ok ? "PASS" : "FAIL", (unsigned long)sim->kills, (unsigned long)shots_seen, shotgun_seen,
-               sim->waves.number, (unsigned long)throws, mg_seen, (unsigned long)turret_shots,
-               (unsigned long)bombs, (unsigned long)shells, (unsigned long)pickups, p1_reinforced,
-               bot_reinforced, sim->reinforcements, sim->counts.enemies);
+               "bombs %lu, shells %lu, pickups %lu, reinforced p1 %d bot %d, reinforcements %u | mission: "
+               "zones %lu, hold %d, success %d, extracted %lu, results at frame %lu, new mission %d, "
+               "dropped ticks see STATS\n",
+               m3 && m4 ? "PASS" : "FAIL", (unsigned long)m3_kills, (unsigned long)shots_seen, shotgun_seen,
+               m3_wave, (unsigned long)throws, mg_seen, (unsigned long)turret_shots, (unsigned long)bombs,
+               (unsigned long)shells, (unsigned long)pickups, p1_reinforced, bot_reinforced, m3_reinforcements,
+               (unsigned long)zones_captured, hold_seen, success_seen, (unsigned long)extracted,
+               (unsigned long)results_frame, new_mission);
     }
     in->pressed_any |= p->pressed;
 }
@@ -227,6 +283,14 @@ void autotest_observe(const sim_t *sim)
         case EV_PICKUP:        pickups++; break;
         case EV_EXPLOSION:     bombs += e->a == BLAST_BOMB; shells += e->a == BLAST_SHELL; break;
         case EV_REINFORCED:    p1_reinforced |= e->a == 0; bot_reinforced |= e->a == 2; break;
+        case EV_ZONE_CAPTURED: zones_captured++; break;
+        case EV_EXTRACTED:     extracted++; break;
+        case EV_MISSION:
+            debugf("AUTOTEST mission phase %u at tick %lu\n", e->a, (unsigned long)sim->tick);
+            hold_seen |= e->a == MISSION_HOLD;
+            success_seen |= e->a == MISSION_SUCCESS;
+            new_mission |= e->a == MISSION_OBJECTIVE && success_seen; // the next mission's landing
+            break;
         default: break;
         }
     }

@@ -6,6 +6,7 @@
 #include "collide.h"
 #include "enemy.h"
 #include "grid.h"
+#include "mission.h"
 #include "sim_internal.h"
 #include "weapons.h"
 
@@ -22,6 +23,7 @@ const calldown_def_t calldown_defs[CALLDOWN_COUNT] = {
     [CALLDOWN_AIRSTRIKE]   = { "AIRSTRIKE",   { R, U, R, D },       4, SECONDS(45), SECONDS(3) },
     [CALLDOWN_BARRAGE]     = { "BARRAGE",     { R, D, D, L, U, R }, 6, SECONDS(90), SECONDS(5) },
     [CALLDOWN_SENTRY]      = { "SENTRY",      { U, L, D, R, U },    5, SECONDS(90), SECONDS(4) },
+    [CALLDOWN_EXTRACTION]  = { "EXTRACTION",  { R, R, U, D },       4, SECONDS(10), SECONDS(2) },
 };
 
 #undef U
@@ -81,6 +83,8 @@ bool calldown_available(const sim_t *s, int idx, calldown_type_t type)
         return false;
     if (type == CALLDOWN_REINFORCE)
         return s->reinforcements > 0 && anyone_dead(s) && !beacon_out(s, CALLDOWN_REINFORCE);
+    if (type == CALLDOWN_EXTRACTION)
+        return mission_can_call_extraction(s, idx) && !beacon_out(s, CALLDOWN_EXTRACTION);
     return true;
 }
 
@@ -107,6 +111,7 @@ static bool throw_beacon(sim_t *s, int idx, calldown_type_t type)
     };
     if (!s->settings.free_calldowns)
         s->cooldowns[idx][type] = calldown_defs[type].cooldown;
+    s->mission.stats.calldowns++;
     sim_push_event(s, EV_BEACON_THROWN, (uint8_t)type, p->pos, p->facing);
     return true;
 }
@@ -195,6 +200,7 @@ static void reinforce_at(sim_t *s, vec2 pos)
         vec2 at = v2_add(pos, v2((float)(n % 2) * 1.0f - 0.5f, (float)(n / 2) * -1.0f));
         sim_spawn_player(s, i, at);
         s->reinforcements--;
+        s->mission.stats.reinforcements++;
         n++;
         sim_push_event(s, EV_REINFORCED, (uint8_t)i, at, v2(0.0f, 1.0f));
     }
@@ -259,6 +265,9 @@ static void arrive(sim_t *s, const beacon_t *b)
     case CALLDOWN_SENTRY:
         sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT);
         add_turret(s, b);
+        break;
+    case CALLDOWN_EXTRACTION:
+        mission_start_extraction(s);
         break;
     }
 }

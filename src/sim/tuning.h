@@ -22,7 +22,12 @@
 // --- Arena ---
 #define ARENA_HALF_SIZE      32.0f   // arena is a 64x64 m square centred on the origin
 #define ARENA_ROCK_COUNT     14
-#define ARENA_CLEAR_RADIUS   7.0f    // keep the drop zone free of rocks
+#define ARENA_CLEAR_RADIUS   7.0f    // keep the drop zone and the LZ free of rocks
+#define ZONE_CLEAR_RADIUS    5.5f    // ...and the objective zones
+#define ZONE_DIST_MIN        15.0f   // zones and the LZ sit this far from the drop zone
+#define ZONE_DIST_MAX        22.0f
+#define SITE_SPACING         15.0f   // and at least this far from each other
+#define SITE_EDGE            7.0f    // and this far inside the arena edge
 
 // --- Controls ---
 #define STICK_DEADZONE       10      // raw units (N64 stick reaches about +-85)
@@ -143,6 +148,16 @@
 #define RESUPPLY_USES        4
 #define RESUPPLY_LIFE        SECONDS(60.0f)
 #define MG_PICKUP_LIFE       SECONDS(90.0f)
+
+// --- Mission ---
+#define DROP_IN_TICKS        SECONDS(2.0f)   // players ride pods down at the start
+#define ZONE_RADIUS          4.0f
+#define ZONE_CAPTURE_TICKS   SECONDS(30.0f)  // standing in it with no bugs inside
+#define LZ_RADIUS            6.0f
+#define EXTRACT_HOLD_TICKS   SECONDS(75.0f)  // from the extraction call to touchdown
+#define DROPSHIP_DESCENT     SECONDS(4.0f)   // seen coming down for this long before it lands
+#define HOLD_WAVE_SPEEDUP    3       // during the hold, wave breaks and group intervals are this much shorter
+#define QUICK_MISSION_DIV    5       // debug: quick mission divides capture and hold times
 
 // --- Bots (stress-test stand-ins for players 2-4) ---
 #define BOT_ENGAGE_RANGE     18.0f

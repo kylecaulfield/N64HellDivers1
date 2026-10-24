@@ -12,6 +12,8 @@
 //   Airstrike        bombs in a line along the throw direction
 //   Orbital barrage  shells at random inside an area, over several seconds
 //   Sentry turret    shoots the nearest bug; its bullets hit players too
+//   Extraction       once the objective is done, thrown from inside the LZ:
+//                    starts the hold until the dropship lands (mission.h)
 //
 // Whatever drops from orbit crushes what it lands on. Friendly fire is on
 // for everything.

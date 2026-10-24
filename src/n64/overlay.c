@@ -58,6 +58,7 @@ void overlay_init(void)
     rdpq_font_style(font, STYLE_TITLE, &(rdpq_fontstyle_t){ .color = RGBA32(0xE8, 0x96, 0x28, 0xFF) });
     rdpq_font_style(font, STYLE_DIM, &(rdpq_fontstyle_t){ .color = RGBA32(0x80, 0x80, 0x88, 0xFF) });
     rdpq_font_style(font, STYLE_GOOD, &(rdpq_fontstyle_t){ .color = RGBA32(0x70, 0xF0, 0x80, 0xFF) });
+    rdpq_font_style(font, STYLE_ZONE_B, &(rdpq_fontstyle_t){ .color = RGBA32(0x50, 0xDC, 0xFF, 0xFF) });
     rdpq_text_register_font(FONT, font);
     ov.heap_baseline = -1;
     perfwin_reset(&ov.frame);

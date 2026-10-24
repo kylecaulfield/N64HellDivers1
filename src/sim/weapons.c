@@ -85,6 +85,7 @@ static void fire(sim_t *s, int idx, vec2 aim)
                              def->speed, def->range, def->damage);
     }
     sim_push_event(s, EV_SHOT, w->type, muzzle, dir);
+    s->mission.stats.shots++;
 
     if (!s->settings.infinite_ammo)
         w->mag--;

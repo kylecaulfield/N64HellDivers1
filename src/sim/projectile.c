@@ -78,10 +78,14 @@ static void update_one(sim_t *s, projectile_t *pr)
 
     if (best_t <= 1.0f) {
         vec2 at = v2_add(p0, v2_scale(step, best_t));
-        if (hit_player >= 0)
+        bool by_player = pr->owner < SIM_MAX_PLAYERS;
+        if (hit_player >= 0) {
+            s->mission.stats.friendly_hits += by_player;
             player_damage(s, hit_player, pr->damage);
-        else if (hit_enemy >= 0)
+        } else if (hit_enemy >= 0) {
+            s->mission.stats.hits += by_player;
             enemy_damage(s, hit_enemy, pr->damage, at, v2_norm_or(step, v2(0.0f, 1.0f)));
+        }
         else if (hit_world)
             sim_push_event(s, EV_HIT_WORLD, 0, at, v2_norm_or(step, v2(0.0f, 1.0f)));
         pr->active = false;

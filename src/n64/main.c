@@ -16,8 +16,10 @@
 #include "hud.h"
 #include "input.h"
 #include "menu.h"
+#include "mission.h"
 #include "overlay.h"
 #include "render.h"
+#include "results.h"
 #include "sim.h"
 #include "tickclock.h"
 #include "version.h"
@@ -95,6 +97,7 @@ int main(void)
     uint64_t last_frame = get_ticks();
     uint32_t frames = 0;
     bool paused = false;
+    bool was_over = false;
 
     for (;;) {
         uint32_t ticks;
@@ -109,27 +112,33 @@ int main(void)
 #ifdef AUTOTEST
         autotest_input(&input, frames, &sim);
 #endif
+        // Once the mission is over the results screen is up; START there
+        // starts a new mission with the same settings.
+        bool over = mission_over(&sim);
         if (input.toggle_overlay)
             overlay_toggle();
-        if (input.toggle_menu)
+        if (input.toggle_menu) {
             menu_toggle();
-        else if (menu_is_open())
+        } else if (menu_is_open()) {
             menu_update(input.pressed_any, &sim);
-        else if (input.pressed_any & SIM_BTN_START)
-            paused = !paused;
+        } else if (input.pressed_any & SIM_BTN_START) {
+            if (over) {
+                sim_restart(&sim, sim.rng.state ^ frames);
+                render_bind_world(&sim);
+                fx_init();
+                over = was_over = false;
+                // Building the new arena takes a few frames' time; that is
+                // loading, not dropped gameplay ticks.
+                tickclock_init(&clock, VBLANKS_PER_TICK, MAX_TICKS_PER_FRAME, vblank_count);
+                debugf("new mission\n");
+            } else {
+                paused = !paused;
+            }
+        }
 
         // The sim only runs while nothing is covering the game. Effects
         // freeze along with it.
-        // Squad lost: the sim counted down; a fresh mission with the same
-        // settings (M4 puts a results screen here).
-        if (sim.squad == SQUAD_LOST && sim.squad_timer == 0) {
-            sim_restart(&sim, sim.rng.state ^ (uint32_t)frames);
-            render_bind_world(&sim);
-            fx_init();
-            debugf("squad lost: mission restarted\n");
-        }
-
-        uint32_t run = (paused || menu_is_open()) ? 0 : ticks;
+        uint32_t run = (paused || menu_is_open() || over) ? 0 : ticks;
         for (int i = 0; i < TIMED_PHASES; i++)
             phase_ticks[i] = 0;
         for (uint32_t i = 0; i < run; i++) {
@@ -147,9 +156,16 @@ int main(void)
         sim.counts.particles = (uint16_t)fx_count();
         uint64_t t_sim = get_ticks();
 
+        if (mission_over(&sim) && !was_over) {
+            was_over = true;
+            results_log(&sim);
+        }
+
         uint32_t wait_us = render_scene(&sim, (float)run * SIM_DT);
         uint64_t t_hud = get_ticks();
         hud_draw(&sim, paused && !menu_is_open());
+        if (was_over)
+            results_draw(&sim);
         menu_draw(&sim);
         overlay_draw();
         uint32_t hud_us = (uint32_t)TICKS_TO_US(get_ticks() - t_hud);

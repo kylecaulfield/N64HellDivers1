@@ -5,6 +5,7 @@
 
 #include <string.h>
 
+#include "calldown.h"
 #include "enemy.h"
 #include "flow.h"
 #include "grid.h"
@@ -16,6 +17,11 @@
 static inline void setup_empty(sim_t *s)
 {
     sim_init(s, 1234);
+    // Skip the drop-in: player 1 is on the ground and the objective is on.
+    s->mission.phase = MISSION_OBJECTIVE;
+    s->mission.timer = 0;
+    s->players[0].state = PSTATE_NORMAL;
+    s->players[0].state_timer = 0;
     s->arena.obstacle_count = 0;
     flow_init(&s->flow, &s->arena);
     s->settings.waves = false;
@@ -61,6 +67,28 @@ static inline int count_projectiles(const sim_t *s)
         if (s->projectiles[i].active)
             n++;
     return n;
+}
+
+static const uint16_t CODE_BUTTON[] = {
+    [CODE_UP] = SIM_BTN_CUP, [CODE_DOWN] = SIM_BTN_CDOWN,
+    [CODE_LEFT] = SIM_BTN_CLEFT, [CODE_RIGHT] = SIM_BTN_CRIGHT,
+};
+
+// Hold R, press each input of `type`'s code on its own tick, then release R
+// (the throw happens on the release tick).
+static inline void enter_code(sim_t *s, sim_input_t in[SIM_MAX_PLAYERS], int port, calldown_type_t type)
+{
+    const calldown_def_t *d = &calldown_defs[type];
+    for (int k = 0; k < d->code_len; k++) {
+        in[port].held = SIM_BTN_R | CODE_BUTTON[d->code[k]];
+        in[port].pressed = CODE_BUTTON[d->code[k]];
+        sim_step(s, in);
+        in[port].held = SIM_BTN_R;
+        in[port].pressed = 0;
+        sim_step(s, in);
+    }
+    in[port].held = 0;
+    sim_step(s, in);
 }
 
 #endif

@@ -1,4 +1,5 @@
 #include "results.h"
+#include "difficulty.h"
 #include "mission.h"
 #include "overlay.h"
 #include "ui.h"
@@ -59,6 +60,9 @@ static unsigned accuracy(const player_stats_t *p)
     return p->shots ? (unsigned)(p->hits * 100 / p->shots) : 0;
 }
 
+// The objective's parts, as the results and the log name them.
+static const char *const PARTS[OBJ_COUNT] = { "ZONES", "NESTS", "STAGES" };
+
 void results_draw(const sim_t *sim, const mission_score_t *sc, int rank)
 {
     const mission_stats_t *st = &sim->mission.stats;
@@ -70,15 +74,18 @@ void results_draw(const sim_t *sim, const mission_score_t *sc, int rank)
     // The squad, then a row per player in their colour, as one text call.
     char text[640];
     int sec = (int)(st->ticks / SIM_HZ);
+    int parts, done = mission_parts(sim, &parts);
+    int obj = sim->mission.objective % OBJ_COUNT;
     int at = snprintf(text, sizeof(text),
                       "TIME %d:%02d    WAVES %u    REINFORCEMENTS %u\n"
                       "KILLS %d: %u skitters %u gnashers %u bulwarks\n"
-                      "EXTRACTED %d OF %d\n"
+                      "EXTRACTED %d OF %d   %s %d/%d   ^%02X%s^00\n"
                       "\n"
                       "^%02X      KILLS  DEATHS   ACC  FF  CALLS^00",
                       sec / 60, sec % 60, sim->waves.number, st->reinforcements,
                       total_kills(st), st->kills[ENEMY_SKITTER], st->kills[ENEMY_GNASHER],
-                      st->kills[ENEMY_BULWARK], count_bits(sim->mission.extracted), squad_size(sim), STYLE_DIM);
+                      st->kills[ENEMY_BULWARK], count_bits(sim->mission.extracted), squad_size(sim),
+                      PARTS[obj], done, parts, STYLE_TITLE, sim_difficulty(sim)->name, STYLE_DIM);
     for (int i = 0; i < SIM_MAX_PLAYERS && at < (int)sizeof(text) - 80; i++) {
         if (!took_part(sim, i))
             continue;
@@ -94,8 +101,9 @@ void results_draw(const sim_t *sim, const mission_score_t *sc, int rank)
     snprintf(line, sizeof(line), "SCORE %06ld", (long)sc->total);
     ui_heading(178, STYLE_TITLE, line);
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM },
-                     FONT, 0, 190, "KILLS %ld ZONES %ld EVAC %ld TIME %ld %ld",
-                     (long)sc->kills, (long)sc->zones, (long)sc->extraction, (long)sc->time, (long)sc->reinforcements);
+                     FONT, 0, 190, "KILLS %ld OBJ %ld EVAC %ld TIME %ld %ld X%ld.%02ld",
+                     (long)sc->kills, (long)sc->objective, (long)sc->extraction, (long)sc->time,
+                     (long)sc->reinforcements, (long)(sc->multiplier / 100), (long)(sc->multiplier % 100));
     const char *footer = rank >= 0 ? "^04NEW HIGH SCORE!^00  PRESS START"
                        : rank == -2 ? "^03DEBUG AIDS USED: NOT RANKED^00  PRESS START" : "PRESS START";
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_TITLE },
@@ -119,9 +127,12 @@ void results_log(const sim_t *sim, const mission_score_t *sc)
                        sim->players[i].bot ? "ai" : "p", i + 1, p->kills, p->deaths, (unsigned long)p->shots,
                        (unsigned long)p->hits, p->friendly_hits, p->calldowns, outcome(sim, i));
     }
-    debugf("RESULT build=%s outcome=%s time=%lus waves=%u kills=%u/%u/%u shots=%lu hits=%lu calldowns=%u "
-           "deaths=%u reinforced=%u friendly_hits=%u extracted=%d/%d score=%ld%s%s\n",
+    static const char *const OBJ[OBJ_COUNT] = { "zones", "nests", "upload" };
+    int parts, done = mission_parts(sim, &parts);
+    debugf("RESULT build=%s outcome=%s objective=%s:%d/%d difficulty=%d time=%lus waves=%u kills=%u/%u/%u "
+           "shots=%lu hits=%lu calldowns=%u deaths=%u reinforced=%u friendly_hits=%u extracted=%d/%d score=%ld%s%s\n",
            GAME_VERSION, sim->mission.phase == MISSION_SUCCESS ? "success" : "failed",
+           OBJ[sim->mission.objective % OBJ_COUNT], done, parts, sim->mission.difficulty + 1,
            (unsigned long)(st->ticks / SIM_HZ), sim->waves.number,
            st->kills[ENEMY_SKITTER], st->kills[ENEMY_GNASHER], st->kills[ENEMY_BULWARK],
            (unsigned long)sq.shots, (unsigned long)sq.hits, sq.calldowns, sq.deaths, st->reinforcements,

@@ -60,6 +60,7 @@ void overlay_init(void)
     rdpq_font_style(font, STYLE_DIM, &(rdpq_fontstyle_t){ .color = RGBA32(0x80, 0x80, 0x88, 0xFF) });
     rdpq_font_style(font, STYLE_GOOD, &(rdpq_fontstyle_t){ .color = RGBA32(0x70, 0xF0, 0x80, 0xFF) });
     rdpq_font_style(font, STYLE_ZONE_B, &(rdpq_fontstyle_t){ .color = RGBA32(0x50, 0xDC, 0xFF, 0xFF) });
+    rdpq_font_style(font, STYLE_ZONE_C, &(rdpq_fontstyle_t){ .color = RGBA32(0xC8, 0x78, 0xFF, 0xFF) });
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const uint8_t *c = PLAYER_RGB[i];
         rdpq_font_style(font, (uint8_t)(STYLE_P1 + i), &(rdpq_fontstyle_t){ .color = RGBA32(c[0], c[1], c[2], 0xFF) });

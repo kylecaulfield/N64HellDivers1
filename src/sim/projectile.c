@@ -1,6 +1,7 @@
 #include "collide.h"
 #include "enemy.h"
 #include "grid.h"
+#include "mission.h"
 #include "sim_internal.h"
 
 int sim_spawn_projectile(sim_t *s, uint8_t owner, uint8_t weapon, vec2 pos, vec2 dir,
@@ -38,7 +39,7 @@ static void update_one(sim_t *s, projectile_t *pr)
     vec2 p0 = pr->pos, p1 = v2_add(p0, step);
 
     float best_t = 2.0f;
-    int hit_enemy = -1, hit_player = -1;
+    int hit_enemy = -1, hit_player = -1, hit_nest = -1;
     bool hit_world = false;
 
     // Only bugs in grid cells the segment could touch.
@@ -64,6 +65,20 @@ static void update_one(sim_t *s, projectile_t *pr)
             hit_world = true;
         }
     }
+    // The objective's structures: live nests take the hit, the terminal
+    // stops it like a rock.
+    const mission_t *m = &s->mission;
+    for (int n = 0; n < s->arena.site_count; n++) {
+        float t;
+        float radius = m->objective == OBJ_UPLOAD && n == 0 ? TERMINAL_RADIUS : NEST_RADIUS;
+        bool solid = m->objective == OBJ_UPLOAD ? n == 0 : mission_nest_live(s, n);
+        if (solid && segment_circle(p0, p1, s->arena.sites[n], radius, &t) && t < best_t) {
+            best_t = t;
+            hit_enemy = -1;
+            hit_world = m->objective == OBJ_UPLOAD;
+            hit_nest = hit_world ? -1 : n;
+        }
+    }
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const player_t *pl = &s->players[i];
         float t;
@@ -72,6 +87,7 @@ static void update_one(sim_t *s, projectile_t *pr)
             best_t = t;
             hit_enemy = -1;
             hit_world = false;
+            hit_nest = -1;
             hit_player = i;
         }
     }
@@ -89,8 +105,11 @@ static void update_one(sim_t *s, projectile_t *pr)
             if (by_player)
                 s->mission.stats.players[by].hits++;
             enemy_damage(s, hit_enemy, pr->damage, at, v2_norm_or(step, v2(0.0f, 1.0f)), by);
-        }
-        else if (hit_world)
+        } else if (hit_nest >= 0) {
+            if (by_player)
+                s->mission.stats.players[by].hits++;
+            mission_damage_nest(s, hit_nest, pr->damage * NEST_BULLET_MULT, at);
+        } else if (hit_world)
             sim_push_event(s, EV_HIT_WORLD, 0, at, v2_norm_or(step, v2(0.0f, 1.0f)));
         pr->active = false;
         return;

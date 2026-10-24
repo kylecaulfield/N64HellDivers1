@@ -19,6 +19,7 @@ typedef struct {
     uint8_t bots;                     // bots play the ports nobody joins
     uint8_t scheme[SIM_MAX_PLAYERS];  // control scheme per port
     uint8_t version;
+    uint8_t difficulty;               // the last one picked on the briefing
 } settings_t;
 
 void save_init(void);

@@ -159,6 +159,17 @@ void fx_spawn_from_events(const sim_t *s)
             else
                 explosion(s, e->pos, e->a == BLAST_BOMB);
             break;
+        case EV_NEST_HIT:
+            burst(e->pos, 1.0f, 2, 1.5f, 3.5f, 6, 10, 24, ICHOR, 2);
+            break;
+        case EV_NEST_DESTROYED: // it bursts: a blast, then shell and ichor everywhere
+            explosion(s, e->pos, true);
+            burst(e->pos, 1.2f, 24, 2.5f, 7.0f, 16, 28, 60, CHITIN, 3);
+            break;
+        case EV_UPLOAD_START:
+        case EV_UPLOAD_STAGE:
+            sparkle(e->pos, REINFORCE, 10);
+            break;
         case EV_REINFORCED:
             sparkle(e->pos, REINFORCE, 10);
             break;

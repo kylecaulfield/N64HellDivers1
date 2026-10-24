@@ -5,21 +5,21 @@
 void test_wave_composition(void)
 {
     uint16_t c[ENEMY_TYPE_COUNT];
-    wave_composition(1, c);
+    wave_composition(1, DIFFICULTY_STANDARD, 3, c);
     CHECK_EQ_INT(c[ENEMY_SKITTER], 6);
     CHECK_EQ_INT(c[ENEMY_GNASHER], 3);
     CHECK_EQ_INT(c[ENEMY_BULWARK], 0);
-    wave_composition(3, c);
+    wave_composition(3, DIFFICULTY_STANDARD, 3, c);
     CHECK_EQ_INT(c[ENEMY_BULWARK], 1);
-    wave_composition(7, c);
+    wave_composition(7, DIFFICULTY_STANDARD, 3, c);
     CHECK_EQ_INT(c[ENEMY_SKITTER], 30);
     CHECK_EQ_INT(c[ENEMY_GNASHER], 15);
     CHECK_EQ_INT(c[ENEMY_BULWARK], 3);
     // Waves only grow.
     for (int w = 1; w < 20; w++) {
         uint16_t a[ENEMY_TYPE_COUNT], b[ENEMY_TYPE_COUNT];
-        wave_composition(w, a);
-        wave_composition(w + 1, b);
+        wave_composition(w, DIFFICULTY_STANDARD, 3, a);
+        wave_composition(w + 1, DIFFICULTY_STANDARD, 3, b);
         for (int t = 0; t < ENEMY_TYPE_COUNT; t++)
             CHECK(b[t] >= a[t]);
     }
@@ -49,9 +49,12 @@ void test_wave_one_spawns_its_composition(void)
     step_n(&s, in, WAVE_GROUP_INTERVAL * 3);
     int c[ENEMY_TYPE_COUNT];
     count_types(&s, c);
-    CHECK_EQ_INT(c[ENEMY_SKITTER], 6);
-    CHECK_EQ_INT(c[ENEMY_GNASHER], 3);
+    uint16_t want[ENEMY_TYPE_COUNT];
+    wave_composition(1, DIFFICULTY_STANDARD, 1, want); // one trooper
+    CHECK_EQ_INT(c[ENEMY_SKITTER], want[ENEMY_SKITTER]);
+    CHECK_EQ_INT(c[ENEMY_GNASHER], want[ENEMY_GNASHER]);
     CHECK_EQ_INT(c[ENEMY_BULWARK], 0);
+    CHECK(want[ENEMY_SKITTER] < 6); // a smaller wave than the standard three's
     for (int i = 0; i < SIM_MAX_ENEMIES; i++) {
         const enemy_t *e = &s.enemies[i];
         if (!e->active)
@@ -72,12 +75,14 @@ void test_wave_waits_for_cap_and_loses_nothing(void)
     sim_input_t in[SIM_MAX_PLAYERS];
     inputs_none(in);
     step_n(&s, in, WAVE_FIRST_DELAY + 2 + WAVE_GROUP_INTERVAL * 4);
+    int total = s.waves.total;
+    CHECK(total > 4);
     CHECK_EQ_INT(s.counts.enemies, 4);
-    CHECK_EQ_INT(s.waves.remaining[ENEMY_SKITTER] + s.waves.remaining[ENEMY_GNASHER], 9 - 4);
+    CHECK_EQ_INT(s.waves.remaining[ENEMY_SKITTER] + s.waves.remaining[ENEMY_GNASHER], total - 4);
     // Make room: the rest of the wave arrives.
     s.settings.enemy_cap = 64;
     step_n(&s, in, WAVE_GROUP_INTERVAL * 3);
-    CHECK_EQ_INT(s.counts.enemies, 9);
+    CHECK_EQ_INT(s.counts.enemies, total);
     CHECK_EQ_INT(s.waves.remaining[ENEMY_SKITTER] + s.waves.remaining[ENEMY_GNASHER], 0);
 }
 

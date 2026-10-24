@@ -130,7 +130,7 @@ void calldown_player_input(sim_t *s, int idx, const player_intent_t *in, bool ca
             return;
         if (c->len < CALLDOWN_CODE_MAX) {
             c->inputs[c->len++] = in->code_input;
-            if (calldown_prefix(c->inputs, c->len)) {
+            if (calldown_prefix(c->inputs, c->len) || mission_terminal_prefix(s, idx, c->inputs, c->len)) {
                 sim_push_event(s, EV_CODE_INPUT, (uint8_t)idx, p->pos, p->facing);
                 return;
             }
@@ -147,6 +147,11 @@ void calldown_player_input(sim_t *s, int idx, const player_intent_t *in, bool ca
     c->len = 0;
     if (len == 0)
         return; // R tapped without a code
+    // The terminal's code (its codes never start with a calldown's).
+    if (can_act && len == s->mission.upload.code_len && mission_terminal_prefix(s, idx, c->inputs, len)) {
+        mission_upload_start(s, idx);
+        return;
+    }
     int type = calldown_match(c->inputs, len);
     if (type < 0 || !can_act || !calldown_available(s, idx, (calldown_type_t)type) ||
         !throw_beacon(s, idx, (calldown_type_t)type))
@@ -184,6 +189,13 @@ void sim_explode(sim_t *s, vec2 pos, float radius, float damage, blast_kind_t ki
         float d = v2_len(v2_sub(p->pos, pos)) - PLAYER_RADIUS;
         if (d < radius)
             player_damage(s, i, damage * falloff(d, radius));
+    }
+    for (int n = 0; n < s->arena.site_count; n++) {
+        if (!mission_nest_live(s, n))
+            continue;
+        float d = v2_len(v2_sub(s->arena.sites[n], pos)) - NEST_RADIUS;
+        if (d < radius)
+            mission_damage_nest(s, n, damage * falloff(d, radius), pos);
     }
 }
 

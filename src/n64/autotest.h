@@ -8,9 +8,11 @@
 // machine gun and a resupply, dying, bots reinforcing each other, a quick
 // mission through to the results screen and the next mission), and plugs in
 // controllers 2 and 4 to join, fight and leave. Around that it goes through
-// the front end: splash, title, menu, briefing, initials for the high score
-// and the table. So a ROM can be exercised in ares with no controller. Logs
-// "AUTOTEST PASS/FAIL" with a summary.
+// the front end: splash, title, menu, briefing (setting the difficulty),
+// initials for the high score and the table. Then two more missions, the
+// other objectives (nests, upload), played by bots on every port. So a ROM
+// can be exercised in ares with no controller. Logs "AUTOTEST PASS/FAIL"
+// with a summary.
 
 #include <stdint.h>
 
@@ -24,5 +26,8 @@
 void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t screen_frames, uint32_t mission_frames);
 // Look at what the sim did this frame (call before its events are cleared).
 void autotest_observe(const sim_t *sim);
+// The objective for the next mission (called as its briefing starts): the
+// script plays each one in turn.
+int autotest_objective(void);
 
 #endif

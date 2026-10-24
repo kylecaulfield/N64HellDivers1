@@ -8,7 +8,9 @@
 
 #include "sim.h"
 
-void wave_composition(int wave, uint16_t out[ENEMY_TYPE_COUNT]);
+// Wave `wave`'s bugs of each type at a difficulty level, for a squad of
+// `troopers` (bots count; three is the standard).
+void wave_composition(int wave, int difficulty, int troopers, uint16_t out[ENEMY_TYPE_COUNT]);
 void waves_reset(sim_t *s);
 void waves_update(sim_t *s);
 

@@ -5,6 +5,7 @@
 #include <libdragon.h>
 
 #include "calldown.h"
+#include "difficulty.h"
 #include "mission.h"
 #include "save.h"
 
@@ -24,6 +25,7 @@
 #define F_TAKEOVER    1800  // bots on; controller 4 joins (takes over its bot), then unplugs
 #define F_MISSION     1900  // quick mission with P2: both zones, extraction, results, new mission
 #define F_DEADLINE    6200  // FAIL if the mission loop hasn't finished by now
+#define BOT_DEADLINE  9000  // frames for each bot-played mission (nests, upload)
 
 static const struct {
     uint32_t frame;
@@ -50,6 +52,62 @@ static bool scheme_switched, p2_pod, p4_took_over, p4_left, p2_next_mission;
 static uint32_t p2_shots;
 static uint16_t fe_seen;     // bit per screen passed through
 static bool initials_saved;
+static int briefings;        // missions generated so far
+static bool part1_ok, verdict;
+static char part1[400];
+static uint8_t success_mask; // bit per objective_type_t completed with extraction
+static uint32_t nests_destroyed, stages_done, uploads_started;
+static uint8_t first_difficulty = 0xFF;
+
+static void phase(uint32_t frame, const char *name, const sim_t *sim);
+
+int autotest_objective(void)
+{
+    static const objective_type_t ORDER[] = { OBJ_ZONES, OBJ_NESTS, OBJ_UPLOAD };
+    int k = briefings++;
+    return k < 3 ? ORDER[k] : OBJ_ZONES;
+}
+
+// The nests and upload missions: every port is a bot (players 1 and 2 hand
+// their troopers over), and the leading bot works through the objective and
+// calls extraction itself. Then START on the results.
+static void bot_mission(input_frame_t *in, sim_t *sim, uint32_t mf)
+{
+    static uint32_t over_at;
+    static int set_up = -1;
+    sim_input_t *p = &in->ports[0];
+    if (set_up != briefings) { // a new mission (the first frames went to the first part's checks)
+        set_up = briefings;
+        over_at = 0;
+        phase(0, sim->mission.objective == OBJ_NESTS ? "bots play: destroy the nests" : "bots play: upload", sim);
+        sim->settings.god_mode = true;
+        sim->settings.quick_mission = true;
+        sim->players[0].bot = sim->players[1].bot = true;
+        sim_set_bots(sim, true);
+    }
+    if (!mission_over(sim)) {
+        if (mf == BOT_DEADLINE)
+            debugf("AUTOTEST bot mission still in phase %u after %u frames\n", sim->mission.phase, BOT_DEADLINE);
+        return;
+    }
+    if (!over_at) {
+        over_at = mf;
+        phase(mf, sim->mission.phase == MISSION_SUCCESS ? "results: success" : "results: failed", sim);
+    }
+    if (mf == over_at + 100)
+        p->pressed = SIM_BTN_START;
+}
+
+static void final_verdict(void)
+{
+    verdict = true;
+    bool m7 = first_difficulty == DIFFICULTY_STANDARD && success_mask == (1u << OBJ_COUNT) - 1 &&
+              nests_destroyed >= 3 && uploads_started >= 3 && stages_done >= 3;
+    debugf("AUTOTEST %s: %s | objectives: success mask %x, nests destroyed %lu, uploads %lu, stages %lu, "
+           "first mission level %u\n",
+           part1_ok && m7 ? "PASS" : "FAIL", part1, success_mask, (unsigned long)nests_destroyed,
+           (unsigned long)uploads_started, (unsigned long)stages_done, first_difficulty);
+}
 
 static int nearest_enemy(const sim_t *sim, vec2 from)
 {
@@ -175,8 +233,15 @@ void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf,
             p->pressed = SIM_BTN_A; // DEPLOY
         break;
     case SCREEN_BRIEFING:
-        if (sf == 45)
+        // A fresh save starts on the easiest level: step it to STANDARD
+        // (the first mission's checks assume it), then drop.
+        if (sim->mission.difficulty != DIFFICULTY_STANDARD && sf >= 10 && sf % 4 == 0)
+            p->held = sim->mission.difficulty < DIFFICULTY_STANDARD ? SIM_BTN_DRIGHT : SIM_BTN_DLEFT;
+        else if (sf >= 45 && sim->mission.difficulty == DIFFICULTY_STANDARD && !verdict)
             p->pressed = SIM_BTN_START;
+        if (sf == 45)
+            debugf("AUTOTEST briefing %d: objective %u, level %u\n", briefings, sim->mission.objective,
+                   sim->mission.difficulty);
         break;
     case SCREEN_INITIALS:
         // Up once on the first letter, then START: "BAA".
@@ -190,7 +255,7 @@ void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf,
             for (int i = 0; i < HISCORE_COUNT; i++)
                 initials_saved |= save_scores()->entries[i].initials[0] == 'B' &&
                                   save_scores()->entries[i].initials[1] == 'A';
-        if (sf == 60)
+        if (sf == 60 && !verdict)
             p->pressed = SIM_BTN_START; // next mission
         break;
     case SCREEN_MISSION:
@@ -199,8 +264,12 @@ void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf,
             p2_plugged = in->ports[1].connected;
             p4_plugged = in->ports[3].connected;
             first_done = results_frame && frame > results_frame + 100;
-        } else {
-            mission_script(in, frame, sim, p2_plugged, p4_plugged); // the checks at the end
+        } else if (!done) {
+            mission_script(in, frame, sim, p2_plugged, p4_plugged); // the first part's checks
+        } else if (!verdict) {
+            bot_mission(in, sim, mf);
+            if ((briefings >= 3 && mission_over(sim)) || mf > BOT_DEADLINE)
+                final_verdict();
         }
         break;
     default:
@@ -222,6 +291,7 @@ static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p
 
     if (frame == 0) {
         phase(frame, "start: idle while wave 1 closes in", sim);
+        first_difficulty = sim->mission.difficulty;
         sim->settings.god_mode = true; // keep the script deterministic in outcome
     } else if (frame < F_WALK) {
         // idle
@@ -362,9 +432,9 @@ static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p
             // Walk to the next zone (or the LZ), shooting the nearest bug
             // with the C-buttons on the way.
             vec2 dest = sim->arena.lz;
-            for (int z = MISSION_ZONES - 1; z >= 0; z--)
+            for (int z = sim->arena.site_count - 1; z >= 0; z--)
                 if (!m->zones[z].captured)
-                    dest = sim->arena.zones[z];
+                    dest = sim->arena.sites[z];
             if (v2_dist2(dest, me->pos) > 1.0f)
                 stick_towards(p, v2_sub(dest, me->pos));
             if (target >= 0)
@@ -372,7 +442,7 @@ static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p
             // A zone the swarm keeps contested for 10 s stalls the smoke
             // test: clear the bugs (and say so).
             bool stuck = false;
-            for (int z = 0; z < MISSION_ZONES; z++)
+            for (int z = 0; z < sim->arena.site_count; z++)
                 stuck |= m->phase == MISSION_OBJECTIVE && m->zones[z].players_in && m->zones[z].bugs_in;
             contested = stuck ? contested + 1 : 0;
             if (contested > 300) {
@@ -395,18 +465,20 @@ static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p
         bool m3 = m3_kills >= 5 && shots_seen > 50 && shotgun_seen && m3_wave >= 1 && throws >= 5 && mg_seen &&
                   turret_shots > 0 && bombs >= AIRSTRIKE_BOMBS && shells >= BARRAGE_SHELLS / 2 && pickups >= 2 &&
                   p1_reinforced && bot_reinforced && m3_reinforcements == REINFORCE_POOL - 2;
-        bool m4 = zones_captured == MISSION_ZONES && hold_seen && success_seen && extracted >= 1 && new_mission &&
-                  !mission_over(sim);
+        bool m4 = zones_captured == difficulty_defs[DIFFICULTY_STANDARD].zones && hold_seen && success_seen &&
+                  extracted >= 1 && new_mission && !mission_over(sim);
         bool m5 = scheme_switched && p2_pod && p2_shots > 0 && p4_took_over && p4_left && p2_next_mission;
         const uint16_t path = 1u << SCREEN_SPLASH | 1u << SCREEN_TITLE | 1u << SCREEN_MENU | 1u << SCREEN_BRIEFING |
                               1u << SCREEN_MISSION | 1u << SCREEN_INITIALS | 1u << SCREEN_SCORES;
         bool m6 = (fe_seen & path) == path && initials_saved;
-        debugf("AUTOTEST %s: kills %lu, shots %lu, shotgun %d, wave %u, throws %lu, mg %d, turret shots %lu, "
+        part1_ok = m3 && m4 && m5 && m6;
+        snprintf(part1, sizeof(part1), "part 1 %s", part1_ok ? "ok" : "FAILED");
+        debugf("AUTOTEST part 1 %s: kills %lu, shots %lu, shotgun %d, wave %u, throws %lu, mg %d, turret shots %lu, "
                "bombs %lu, shells %lu, pickups %lu, reinforced p1 %d bot %d, reinforcements %u | mission: "
                "zones %lu, hold %d, success %d, extracted %lu, results at frame %lu, new mission %d | players: "
                "scheme switch %d, p2 pod %d, p2 shots %lu, p4 takeover %d, p4 left %d, p2 next mission %d | "
                "front end: screens %03x, initials saved %d, dropped ticks see STATS\n",
-               m3 && m4 && m5 && m6 ? "PASS" : "FAIL", (unsigned long)m3_kills, (unsigned long)shots_seen, shotgun_seen,
+               part1_ok ? "ok" : "FAILED", (unsigned long)m3_kills, (unsigned long)shots_seen, shotgun_seen,
                m3_wave, (unsigned long)throws, mg_seen, (unsigned long)turret_shots, (unsigned long)bombs,
                (unsigned long)shells, (unsigned long)pickups, p1_reinforced, bot_reinforced, m3_reinforcements,
                (unsigned long)zones_captured, hold_seen, success_seen, (unsigned long)extracted,
@@ -426,11 +498,16 @@ void autotest_observe(const sim_t *sim)
         case EV_EXPLOSION:     bombs += e->a == BLAST_BOMB; shells += e->a == BLAST_SHELL; break;
         case EV_REINFORCED:    p1_reinforced |= e->a == 0; bot_reinforced |= e->a == 2; break;
         case EV_ZONE_CAPTURED: zones_captured++; break;
+        case EV_NEST_DESTROYED: nests_destroyed++; break;
+        case EV_UPLOAD_START:  uploads_started++; break;
+        case EV_UPLOAD_STAGE:  stages_done++; break;
         case EV_EXTRACTED:     extracted++; break;
         case EV_MISSION:
             debugf("AUTOTEST mission phase %u at tick %lu\n", e->a, (unsigned long)sim->tick);
             hold_seen |= e->a == MISSION_HOLD;
             success_seen |= e->a == MISSION_SUCCESS;
+            if (e->a == MISSION_SUCCESS)
+                success_mask |= (uint8_t)(1u << sim->mission.objective);
             new_mission |= e->a == MISSION_OBJECTIVE && success_seen; // the next mission's landing
             break;
         default: break;

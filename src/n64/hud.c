@@ -1,5 +1,6 @@
 #include "bench.h"
 #include "calldown.h"
+#include "difficulty.h"
 #include "hud.h"
 #include "mission.h"
 #include "overlay.h"
@@ -125,11 +126,24 @@ static void code_text(char *buf, int n, const uint8_t *code, int len, int matche
     }
 }
 
+// How many of `code`'s first inputs the entry so far matches, and whether
+// the entry has gone past it (`out`).
+static int code_match(const player_t *p, const uint8_t *code, int len, bool *out)
+{
+    int match = 0;
+    while (match < p->code.len && match < len && code[match] == p->code.inputs[match])
+        match++;
+    *out = match < p->code.len;
+    return match;
+}
+
 // While a player holds R: every calldown with its code (the part already
 // entered in green; codes the entry no longer matches dimmed), or its
-// cooldown. Each player's panel has its own corner (P1 top left, P2 top
-// right, P3 and P4 below), so several can be open at once; one text call
-// each.
+// cooldown. On an upload mission the last row is the terminal's code
+// instead of Extraction (which can't be called before the objective is
+// done anyway). Each player's panel has its own corner (P1 top left, P2
+// top right, P3 and P4 below), so several can be open at once; one text
+// call each.
 static void code_panel(const sim_t *sim, int idx)
 {
     const player_t *p = &sim->players[idx];
@@ -144,12 +158,26 @@ static void code_panel(const sim_t *sim, int idx)
     int at = 0;
     code_text(code, sizeof(code), p->code.inputs, p->code.len, 0, STYLE_TITLE);
     at += snprintf(text + at, sizeof(text) - (size_t)at, "^%02XP%d CALLDOWN  %s", STYLE_P1 + idx, idx + 1, code);
+    const mission_t *m = &sim->mission;
+    bool terminal_row = m->objective == OBJ_UPLOAD && m->phase <= MISSION_OBJECTIVE;
     for (int t = 0; t < CALLDOWN_COUNT && at < (int)sizeof(text) - 64; t++) {
+        if (t == CALLDOWN_EXTRACTION && terminal_row) {
+            const upload_t *u = &m->upload;
+            bool open = mission_terminal_open(sim, idx), out;
+            int match = code_match(p, u->code, u->code_len, &out);
+            int style = open && !out ? STYLE_ZONE_B : STYLE_DIM;
+            at += snprintf(text + at, sizeof(text) - (size_t)at, "\n^%02X%-12s", style, "UPLOAD");
+            if (open) {
+                code_text(code, sizeof(code), u->code, u->code_len, out ? 0 : match, style);
+                at += snprintf(text + at, sizeof(text) - (size_t)at, "%s", code);
+            } else {
+                at += snprintf(text + at, sizeof(text) - (size_t)at, "%s", u->running ? "UPLOADING" : "AT TERMINAL");
+            }
+            continue;
+        }
         const calldown_def_t *d = &calldown_defs[t];
-        int match = 0;
-        while (match < p->code.len && match < d->code_len && d->code[match] == p->code.inputs[match])
-            match++;
-        bool out = match < p->code.len;
+        bool out;
+        int match = code_match(p, d->code, d->code_len, &out);
         uint16_t cd = sim->cooldowns[idx][t];
         bool none = t == CALLDOWN_REINFORCE && sim->reinforcements == 0;
         bool ready = !cd && !none && calldown_available(sim, idx, (calldown_type_t)t);
@@ -179,6 +207,71 @@ static void beacon_labels(const sim_t *sim)
     }
 }
 
+// Over each live nest on screen, a health bar; over the terminal, the code
+// to enter while it waits for one.
+static void site_labels(const sim_t *sim)
+{
+    const mission_t *m = &sim->mission;
+    if (m->phase != MISSION_OBJECTIVE)
+        return;
+    if (m->objective == OBJ_UPLOAD) {
+        const upload_t *u = &m->upload;
+        int sx, sy;
+        if (u->running || !render_project(sim->arena.sites[0], 2.6f, &sx, &sy))
+            return;
+        char code[64];
+        code_text(code, sizeof(code), u->code, u->code_len, 0, STYLE_ZONE_B);
+        rdpq_text_printf(NULL, FONT, sx - (u->code_len * 2 - 1) * CW / 2, sy, "%s", code);
+        return;
+    }
+    if (m->objective != OBJ_NESTS)
+        return;
+    bool mode = false;
+    for (int n = 0; n < sim->arena.site_count; n++) {
+        int sx, sy;
+        if (m->nests[n].destroyed || !render_project(sim->arena.sites[n], 2.4f, &sx, &sy))
+            continue;
+        if (!mode)
+            rdpq_set_mode_fill(RGBA32(20, 20, 20, 0xFF));
+        mode = true;
+        bar(sx - 14, sy - 2, 28, 3, m->nests[n].hp / mission_nest_hp(sim), RGBA32(150, 230, 60, 0xFF));
+    }
+}
+
+// The objective's progress under the top line, with zone names in their
+// marker colours (inline style escapes).
+static void objective_progress(const sim_t *sim)
+{
+    const mission_t *m = &sim->mission;
+    rdpq_textparms_t centre = { .width = 320, .align = ALIGN_CENTER };
+    int total, done = mission_parts(sim, &total);
+    if (m->objective == OBJ_NESTS) {
+        rdpq_text_printf(&centre, FONT, 0, 30, "^%02XDESTROY THE NESTS^00   %d/%d", STYLE_TITLE, done, total);
+    } else if (m->objective == OBJ_UPLOAD) {
+        const upload_t *u = &m->upload;
+        if (!u->running)
+            rdpq_text_printf(&centre, FONT, 0, 30, "^%02XUPLOAD %d/%d^00   ENTER THE CODE AT THE TERMINAL", STYLE_TITLE,
+                             done + 1, total);
+        else
+            rdpq_text_printf(&centre, FONT, 0, 30, "^%02XUPLOADING %d/%d^00  %d%%%s", STYLE_TITLE, done + 1, total,
+                             u->progress * 100 / mission_stage_ticks(sim),
+                             u->players_in ? "" : "  ^01STAY IN THE RING");
+    } else {
+        static const int ZONE_STYLE[3] = { STYLE_TITLE, STYLE_ZONE_B, STYLE_ZONE_C };
+        char line[128];
+        int at = snprintf(line, sizeof(line), "HOLD THE ZONES");
+        for (int z = 0; z < total; z++) {
+            int style = ZONE_STYLE[z % 3];
+            if (m->zones[z].captured)
+                at += snprintf(line + at, sizeof(line) - (size_t)at, "   ^%02X%c^%02X HELD^00", style, 'A' + z, STYLE_GOOD);
+            else
+                at += snprintf(line + at, sizeof(line) - (size_t)at, "   ^%02X%c^00 %d%%", style, 'A' + z,
+                               m->zones[z].held * 100 / mission_capture_ticks(sim));
+        }
+        rdpq_text_printf(&centre, FONT, 0, 30, "%s", line);
+    }
+}
+
 // What the squad should be doing, under the top line.
 static void objective_line(const sim_t *sim)
 {
@@ -186,23 +279,11 @@ static void objective_line(const sim_t *sim)
     rdpq_textparms_t centre = { .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_TITLE };
     switch (m->phase) {
     case MISSION_DROP:
-        rdpq_text_printf(&centre, FONT, 0, 30, "DROPPING IN");
+        rdpq_text_printf(&centre, FONT, 0, 30, "DROPPING IN  -  %s", objective_name((objective_type_t)m->objective));
         break;
-    case MISSION_OBJECTIVE: {
-        // Zone names in their marker colours, via inline style escapes.
-        char zone[MISSION_ZONES][20];
-        for (int z = 0; z < MISSION_ZONES; z++) {
-            int style = z ? STYLE_ZONE_B : STYLE_TITLE;
-            if (m->zones[z].captured)
-                snprintf(zone[z], sizeof(zone[z]), "^%02X%c^%02X HELD", style, 'A' + z, STYLE_GOOD);
-            else
-                snprintf(zone[z], sizeof(zone[z]), "^%02X%c^00 %d%%", style, 'A' + z,
-                         m->zones[z].held * 100 / mission_capture_ticks(sim));
-        }
-        rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER }, FONT, 0, 30,
-                         "HOLD THE ZONES   %s^00   %s", zone[0], zone[1]);
+    case MISSION_OBJECTIVE:
+        objective_progress(sim);
         break;
-    }
     case MISSION_EXTRACT:
         rdpq_text_printf(&centre, FONT, 0, 30, "GO TO THE LZ AND CALL EXTRACTION");
         break;
@@ -272,6 +353,7 @@ void hud_draw(const sim_t *sim, bool paused, uint8_t connected, int quit)
                          "%s", bench);
 
     objective_line(sim);
+    site_labels(sim);
     beacon_labels(sim);
     for (int i = 0; i < SIM_MAX_PLAYERS; i++)
         code_panel(sim, i);

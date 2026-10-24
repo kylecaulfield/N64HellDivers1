@@ -1,3 +1,4 @@
+#include "difficulty.h"
 #include "mission.h"
 #include "test.h"
 #include "test_util.h"
@@ -14,29 +15,43 @@ static void hold_at(sim_t *s, sim_input_t in[SIM_MAX_PLAYERS], int port, vec2 po
 
 static void capture_all(sim_t *s, sim_input_t in[SIM_MAX_PLAYERS])
 {
-    for (int z = 0; z < MISSION_ZONES; z++)
-        hold_at(s, in, 0, s->arena.zones[z], mission_capture_ticks(s) + 1);
+    for (int z = 0; z < s->arena.site_count; z++)
+        hold_at(s, in, 0, s->arena.sites[z], mission_capture_ticks(s) + 1);
 }
 
 // --- Sites and the drop-in -----------------------------------------------------------
 
 void test_mission_sites_are_spaced_and_clear_of_rocks(void)
 {
-    for (uint32_t seed = 1; seed < 40; seed++) {
-        sim_t s;
-        sim_init(&s, seed * 7919u);
-        vec2 sites[MISSION_ZONES + 1] = { s.arena.zones[0], s.arena.zones[1], s.arena.lz };
-        for (int i = 0; i <= MISSION_ZONES; i++) {
-            float d = v2_len(sites[i]);
-            CHECK(d >= ZONE_DIST_MIN - 1e-3f && d <= ZONE_DIST_MAX + 1e-3f);
-            CHECK(fabsf(sites[i].x) <= ARENA_HALF_SIZE - SITE_EDGE + 1e-3f);
-            CHECK(fabsf(sites[i].y) <= ARENA_HALF_SIZE - SITE_EDGE + 1e-3f);
-            for (int j = 0; j < i; j++)
-                CHECK(v2_len(v2_sub(sites[i], sites[j])) >= SITE_SPACING - 1e-3f);
-            float clear = i == MISSION_ZONES ? ARENA_CLEAR_RADIUS : ZONE_CLEAR_RADIUS;
-            for (int r = 0; r < s.arena.obstacle_count; r++) {
-                const obstacle_t *o = &s.arena.obstacles[r];
-                CHECK(v2_len(v2_sub(o->pos, sites[i])) >= clear + o->radius - 1e-3f);
+    // Every objective at every difficulty: 1 to 4 sites plus the LZ.
+    for (int diff = 0; diff < DIFFICULTY_COUNT; diff++) {
+        for (int obj = 0; obj < OBJ_COUNT; obj++) {
+            for (uint32_t seed = 1; seed < 40; seed++) {
+                sim_t s;
+                sim_init(&s, 1);
+                s.settings.difficulty = (uint8_t)diff;
+                s.settings.objective = (uint8_t)obj;
+                sim_restart(&s, seed * 7919u);
+                int n = s.arena.site_count;
+                CHECK_EQ_INT(n, difficulty_sites(diff, (objective_type_t)obj));
+                vec2 sites[ARENA_SITES + 1];
+                for (int i = 0; i < n; i++)
+                    sites[i] = s.arena.sites[i];
+                sites[n] = s.arena.lz;
+                float spacing = n + 1 > 3 ? SITE_SPACING_CROWDED : SITE_SPACING;
+                for (int i = 0; i <= n; i++) {
+                    float d = v2_len(sites[i]);
+                    CHECK(d >= ZONE_DIST_MIN - 1e-3f && d <= ZONE_DIST_MAX + 1e-3f);
+                    CHECK(fabsf(sites[i].x) <= ARENA_HALF_SIZE - SITE_EDGE + 1e-3f);
+                    CHECK(fabsf(sites[i].y) <= ARENA_HALF_SIZE - SITE_EDGE + 1e-3f);
+                    for (int j = 0; j < i; j++)
+                        CHECK(v2_len(v2_sub(sites[i], sites[j])) >= spacing - 1e-3f);
+                    float clear = i == n ? ARENA_CLEAR_RADIUS : ZONE_CLEAR_RADIUS;
+                    for (int r = 0; r < s.arena.obstacle_count; r++) {
+                        const obstacle_t *o = &s.arena.obstacles[r];
+                        CHECK(v2_len(v2_sub(o->pos, sites[i])) >= clear + o->radius - 1e-3f);
+                    }
+                }
             }
         }
     }
@@ -87,7 +102,7 @@ void test_zone_fills_while_held_and_keeps_its_progress(void)
     setup_empty(&s);
     sim_input_t in[SIM_MAX_PLAYERS];
     inputs_none(in);
-    vec2 z = s.arena.zones[0];
+    vec2 z = s.arena.sites[0];
     int need = mission_capture_ticks(&s);
     hold_at(&s, in, 0, z, need / 2);
     CHECK_EQ_INT(s.mission.zones[0].held, need / 2);
@@ -106,7 +121,7 @@ void test_bugs_in_a_zone_stop_it(void)
     sim_input_t in[SIM_MAX_PLAYERS];
     inputs_none(in);
     s.settings.god_mode = true;
-    vec2 z = s.arena.zones[1];
+    vec2 z = s.arena.sites[1];
     int e = sim_spawn_enemy(&s, ENEMY_BULWARK, v2(z.x + 2.0f, z.y));
     for (int t = 0; t < 60; t++) {
         s.enemies[e].pos = v2(z.x + 2.0f, z.y);

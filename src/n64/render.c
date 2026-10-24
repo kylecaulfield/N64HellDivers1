@@ -30,12 +30,14 @@
 enum {
     MDL_SOLDIER, MDL_SKITTER, MDL_GNASHER, MDL_BULWARK,
     MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND,
-    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_DROPSHIP, MDL_SHADOW, MDL_COUNT
+    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_DROPSHIP, MDL_SHADOW,
+    MDL_NEST, MDL_NEST_DEAD, MDL_TERMINAL, MDL_COUNT
 };
 
 static const char *const model_names[MDL_COUNT] = {
     "soldier", "skitter", "gnasher", "bulwark", "rock_a", "rock_b", "rock_c", "ground",
     "beacon", "turret", "crate", "mgcase", "pod", "dropship", "shadow",
+    "nest", "nest_dead", "terminal",
 };
 
 // What falls from orbit for each calldown (-1: nothing, it is a strike), and
@@ -69,13 +71,14 @@ static render_stats_t stats;
 
 #define MODEL_SCALE (WORLD_SCALE / 64.0f)
 // Beacons with their drops and the drops' shadows, turrets, pickups,
-// troopers' shadows, pods with theirs, the dropship with its.
-#define MAX_PROPS (SIM_MAX_BEACONS * 3 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS + SIM_MAX_PLAYERS * 3 + 2)
+// troopers' shadows, pods with theirs, the dropship with its, the
+// objective's nests or terminal.
+#define MAX_PROPS (SIM_MAX_BEACONS * 3 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS + SIM_MAX_PLAYERS * 3 + 2 + ARENA_SITES)
 #define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES + MAX_PROPS)
 #define TELEGRAPH_DOTS 16
 #define MAX_PARTICLES (SIM_MAX_PROJECTILES * 2 + FX_MAX + SIM_MAX_PLAYERS * 3 + \
                        SIM_MAX_BEACONS * (4 + TELEGRAPH_DOTS) + SIM_MAX_STRIKES * TELEGRAPH_DOTS + \
-                       SIM_MAX_PICKUPS + (MISSION_ZONES + 1) * (TELEGRAPH_DOTS + 9) + \
+                       SIM_MAX_PICKUPS + (ARENA_SITES + 1) * (TELEGRAPH_DOTS + 9) + \
                        SIM_MAX_PLAYERS * 3 + SIM_MAX_BEACONS * 2 + ENGINE_GLOWS + 4)
 #define ENGINE_GLOWS 4
 #define PARTICLE_PAIRS (MAX_PARTICLES / 2)
@@ -308,11 +311,14 @@ static void build_calldowns(const sim_t *sim, pbuild_t *pb)
 }
 
 // Site colours, matching the HUD's text styles for the zone names.
-static const uint8_t site_rgb[MISSION_ZONES + 1][3] = {
+static const uint8_t zone_rgb[3][3] = {
     { 232, 150, 40 },  // zone A (STYLE_TITLE)
     { 80, 220, 255 },  // zone B (STYLE_ZONE_B)
-    { 240, 240, 255 }, // LZ
+    { 200, 120, 255 }, // zone C (STYLE_ZONE_C)
 };
+static const uint8_t lz_rgb[3] = { 240, 240, 255 };
+static const uint8_t nest_rgb[3] = { 150, 230, 60 };
+static const uint8_t terminal_rgb[3] = { 80, 220, 255 };
 
 // A light column over a site, and when the site is off screen a chevron at
 // the edge of the visible ground pointing at it. Particles, not text: every
@@ -342,34 +348,57 @@ static void site_marker(const sim_t *sim, pbuild_t *pb, vec2 pos, const uint8_t 
         pb_add(pb, pts[k].x, 0.5f, -pts[k].y, k == 3 ? 16 : 26, c[0], c[1], c[2]);
 }
 
-// Objective zones as rings that light up with their progress (green when
-// captured, red while bugs hold them), and the LZ, blinking while it waits
-// for the extraction call. Sites still to visit get markers.
+// A ring of dots around `c`, the first `lit` of TELEGRAPH_DOTS in `on`.
+static void progress_ring(pbuild_t *pb, vec2 c, float radius, int lit, const uint8_t *on, const uint8_t *off)
+{
+    for (int k = 0; k < TELEGRAPH_DOTS; k++) {
+        float a = 6.2832f * (float)k / TELEGRAPH_DOTS;
+        const uint8_t *col = k < lit ? on : off;
+        pb_add(pb, c.x + fm_cosf(a) * radius, 0.1f, -(c.y + fm_sinf(a) * radius), 16, col[0], col[1], col[2]);
+    }
+}
+
+// The objective's sites: zones as rings that light up with their progress
+// (green when captured, red while bugs hold them); nests, which need no
+// ring; the terminal's ring, filling as the stage uploads (blinking while
+// it waits for its code, red while nobody is in it). Then the LZ, blinking
+// while it waits for the extraction call. Sites still to visit get markers.
 static void build_mission(const sim_t *sim, pbuild_t *pb)
 {
+    static const uint8_t GREY[3] = { 150, 150, 150 }, GOLD[3] = { 255, 190, 60 }, GREEN[3] = { 90, 240, 110 };
     const mission_t *m = &sim->mission;
     bool blink = (sim->tick / 8) & 1;
+    bool active = m->phase == MISSION_OBJECTIVE;
     if (m->phase <= MISSION_OBJECTIVE) {
-        for (int z = 0; z < MISSION_ZONES; z++) {
-            const zone_state_t *zs = &m->zones[z];
-            vec2 c = sim->arena.zones[z];
-            int lit = zs->held * TELEGRAPH_DOTS / mission_capture_ticks(sim);
-            for (int k = 0; k < TELEGRAPH_DOTS; k++) {
-                float a = 6.2832f * (float)k / TELEGRAPH_DOTS;
-                uint8_t r = 150, g = 150, b = 150;
+        for (int z = 0; z < sim->arena.site_count; z++) {
+            vec2 c = sim->arena.sites[z];
+            if (m->objective == OBJ_NESTS) {
+                if (active && !m->nests[z].destroyed)
+                    site_marker(sim, pb, c, nest_rgb);
+            } else if (m->objective == OBJ_UPLOAD) {
+                const upload_t *u = &m->upload;
+                int lit = u->progress * TELEGRAPH_DOTS / mission_stage_ticks(sim);
+                static const uint8_t RED[3] = { 255, 60, 50 };
+                const uint8_t *off = !u->running ? (blink ? terminal_rgb : GREY) : !u->players_in && blink ? RED : GREY;
+                progress_ring(pb, c, UPLOAD_RADIUS, lit, GOLD, off);
+                if (active)
+                    site_marker(sim, pb, c, terminal_rgb);
+            } else {
+                const zone_state_t *zs = &m->zones[z];
+                static const uint8_t RED[3] = { 255, 60, 50 }, DARK_RED[3] = { 150, 60, 50 };
+                int lit = zs->held * TELEGRAPH_DOTS / mission_capture_ticks(sim);
                 if (zs->captured)
-                    r = 90, g = 240, b = 110;
+                    progress_ring(pb, c, ZONE_RADIUS, TELEGRAPH_DOTS, GREEN, GREEN);
                 else if (zs->players_in && zs->bugs_in)
-                    r = blink ? 255 : 150, g = 60, b = 50;
-                else if (k < lit)
-                    r = 255, g = 190, b = 60;
-                pb_add(pb, c.x + fm_cosf(a) * ZONE_RADIUS, 0.1f, -(c.y + fm_sinf(a) * ZONE_RADIUS), 16, r, g, b);
+                    progress_ring(pb, c, ZONE_RADIUS, 0, GREY, blink ? RED : DARK_RED);
+                else
+                    progress_ring(pb, c, ZONE_RADIUS, lit, GOLD, GREY);
+                if (active && !zs->captured)
+                    site_marker(sim, pb, c, zone_rgb[z % 3]);
             }
-            if (m->phase == MISSION_OBJECTIVE && !zs->captured)
-                site_marker(sim, pb, c, site_rgb[z]);
         }
     }
-    const uint8_t *lz = site_rgb[MISSION_ZONES];
+    const uint8_t *lz = lz_rgb;
     if (m->phase >= MISSION_EXTRACT && !(m->phase == MISSION_EXTRACT && blink))
         pb_ring(pb, sim->arena.lz, LZ_RADIUS, lz[0], lz[1], lz[2]);
     if (m->phase >= MISSION_EXTRACT && !mission_over(sim))
@@ -556,6 +585,25 @@ static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 
         prop_model[n - first] = MDL_POD;
         unit_matrix(&dyn[n++], p->pos, 40.0f * k * k, v2(0.0f, 1.0f), 0.0f, 1.0f);
         n = add_shadow(dyn, n, first, p->pos, 0.8f * (1.0f - 0.6f * k));
+    }
+    // The objective's structures: nests (craters once destroyed; a live
+    // nest swells and shrinks while it is sending bugs out) or the terminal.
+    const mission_t *m = &sim->mission;
+    for (int i = 0; i < sim->arena.site_count && m->objective != OBJ_ZONES; i++) {
+        vec2 c = sim->arena.sites[i];
+        if (!in_rect(c, vmin, vmax) || (m->objective == OBJ_UPLOAD && i > 0))
+            continue;
+        float scale = 1.0f;
+        if (m->objective == OBJ_UPLOAD) {
+            prop_model[n - first] = MDL_TERMINAL;
+        } else if (m->nests[i].destroyed) {
+            prop_model[n - first] = MDL_NEST_DEAD;
+        } else {
+            prop_model[n - first] = MDL_NEST;
+            if (m->nests[i].awake)
+                scale += 0.04f * fm_sinf((float)frame_count * 0.25f + (float)i);
+        }
+        unit_matrix(&dyn[n++], c, 0.0f, v2(fm_sinf((float)i * 2.3f), fm_cosf((float)i * 2.3f)), 0.0f, scale);
     }
     // The dropship: descending at the end of the hold, down on the LZ, then
     // lifting off once everyone is aboard.

@@ -1,4 +1,7 @@
 #include "arena.h"
+
+#include <math.h>
+
 #include "calldown.h"
 #include "camera.h"
 #include "collide.h"
@@ -146,6 +149,30 @@ void players_update(sim_t *s, const player_intent_t intents[SIM_MAX_PLAYERS])
         if (s->players[i].active)
             update_one(s, i, &intents[i]);
 
+    // Troopers don't stand inside each other: overlapping pairs move apart,
+    // half each (a squad backed into a corner would otherwise stack up, and
+    // nobody could shoot past anybody).
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        player_t *a = &s->players[i];
+        if (!sim_player_alive(a) || a->state == PSTATE_DROPPING)
+            continue;
+        for (int j = i + 1; j < SIM_MAX_PLAYERS; j++) {
+            player_t *b = &s->players[j];
+            if (!sim_player_alive(b) || b->state == PSTATE_DROPPING)
+                continue;
+            vec2 d = v2_sub(b->pos, a->pos);
+            float len2 = v2_len2(d);
+            const float min = 2.0f * PLAYER_RADIUS;
+            if (len2 >= min * min)
+                continue;
+            float len = sqrtf(len2);
+            vec2 n = len > 1e-4f ? v2_scale(d, 1.0f / len) : v2_rotate(v2(1.0f, 0.0f), (float)(i + j));
+            vec2 push = v2_scale(n, (min - len) * 0.5f);
+            a->pos = v2_sub(a->pos, push);
+            b->pos = v2_add(b->pos, push);
+        }
+    }
+
     // Collisions: bugs shove players a little, rocks and the arena are solid,
     // and the shared camera's leash keeps everyone on screen.
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
@@ -161,6 +188,7 @@ void players_update(sim_t *s, const player_intent_t intents[SIM_MAX_PLAYERS])
             if (en->active)
                 push_out_circle(&p->pos, PLAYER_RADIUS, en->pos, enemy_defs[en->type].radius);
         }
+        mission_resolve(s, &p->pos, PLAYER_RADIUS);
         arena_resolve(&s->arena, &p->pos, PLAYER_RADIUS);
         p->pos.x = clampf(p->pos.x, s->camera.leash_min.x, s->camera.leash_max.x);
         p->pos.y = clampf(p->pos.y, s->camera.leash_min.y, s->camera.leash_max.y);

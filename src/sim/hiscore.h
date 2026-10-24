@@ -14,9 +14,10 @@ typedef struct {
     uint32_t score;
     char     initials[3];
     uint8_t  waves;
-    uint8_t  squad;   // troopers who took part
+    uint8_t  squad;       // troopers who took part
     uint8_t  flags;
-    uint8_t  pad[2];
+    uint8_t  difficulty;  // 0..DIFFICULTY_COUNT-1
+    uint8_t  objective;   // objective_type_t
 } hiscore_entry_t;
 
 typedef struct {

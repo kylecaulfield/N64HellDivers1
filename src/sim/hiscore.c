@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "sim.h"
+
 void hiscore_defaults(hiscore_table_t *t)
 {
     // The Hivebreaker Corps' own records.
@@ -17,6 +19,8 @@ void hiscore_defaults(hiscore_table_t *t)
         e->waves = (uint8_t)(10 - i / 2);
         e->squad = (uint8_t)(1 + (i % 4));
         e->flags = i < 6 ? HISCORE_EXTRACTED : 0;
+        e->difficulty = (uint8_t)(i < 3 ? 2 : 1);
+        e->objective = (uint8_t)(i % OBJ_COUNT);
     }
 }
 
@@ -45,9 +49,15 @@ static char printable(char c)
 
 void hiscore_sanitize(hiscore_table_t *t)
 {
-    for (int i = 0; i < HISCORE_COUNT; i++)
+    for (int i = 0; i < HISCORE_COUNT; i++) {
+        hiscore_entry_t *e = &t->entries[i];
         for (int k = 0; k < 3; k++)
-            t->entries[i].initials[k] = printable(t->entries[i].initials[k]);
+            e->initials[k] = printable(e->initials[k]);
+        if (e->difficulty >= DIFFICULTY_COUNT)
+            e->difficulty = DIFFICULTY_STANDARD;
+        if (e->objective >= OBJ_COUNT)
+            e->objective = OBJ_ZONES;
+    }
     // Insertion sort, highest first (stable).
     for (int i = 1; i < HISCORE_COUNT; i++) {
         hiscore_entry_t e = t->entries[i];

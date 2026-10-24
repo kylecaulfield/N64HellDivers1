@@ -295,6 +295,8 @@ SAND       = (142, 122, 86)
 RUST       = (132, 92, 62)
 TUFT       = (96, 98, 48)
 PEBBLE     = (104, 96, 88)
+CHARRED    = (44, 36, 34)
+PIT        = (26, 20, 18)
 
 
 def shadow_disc(radius, y=0.03, sides=6):
@@ -529,6 +531,70 @@ def pod():
     return t
 
 
+def shade_by_facing(tris, lo=0.8, hi=0.3):
+    """Tops lighter, sides darker: reads well from the top-down camera."""
+    out = []
+    for (p0, p1, p2), col in tris:
+        n = v_norm(v_cross(v_sub(p1, p0), v_sub(p2, p0)))
+        k = lo + hi * max(0.0, n[1])
+        out.append(((p0, p1, p2), tuple(min(255, int(c * k)) for c in col[:3]) + tuple(col[3:])))
+    return out
+
+
+def nest():
+    """Bug nest, 1.6 m radius (NEST_RADIUS): a lumpy chitin mound with a
+    glowing maw on top and claw-like spines around it."""
+    rnd = random.Random(51)
+    table = {}
+
+    def jitter(i, j):
+        return table.setdefault((i, j), 0.85 + rnd.random() * 0.3)
+
+    t = []
+    t += ellipsoid(0, 0.15, 0, 1.6, 1.0, 1.6, CHITIN_DK, rings=4, segments=8, jitter=jitter)
+    t += ellipsoid(0, 0.95, 0, 0.75, 0.45, 0.75, CHITIN, rings=3, segments=6)
+    t += cylinder(0, 1.25, 0, 0.42, 0.12, 6, CHITIN_LT, cap_color=GLAND)     # the maw
+    for k in range(6):
+        a = 2 * math.pi * (k + 0.3) / 6
+        base = (math.sin(a) * 1.2, 0.5, math.cos(a) * 1.2)
+        tip = (math.sin(a) * 1.75, 1.35 + 0.2 * (k % 2), math.cos(a) * 1.75)
+        t += spike(base, tip, 0.16, CLAW)
+    for k in range(3):
+        a = 2 * math.pi * k / 3 + 0.9
+        t += ellipsoid(math.sin(a) * 1.0, 0.7, math.cos(a) * 1.0, 0.18, 0.14, 0.18, GLAND, rings=3, segments=4)
+    t += shadow_disc(1.9, y=0.03, sides=8)
+    return shade_by_facing(t)
+
+
+def nest_dead():
+    """What is left of a nest: a scorched, broken ring of shell around a pit."""
+    t = []
+    t += shadow_disc(2.0, y=0.03, sides=8)                                  # scorch mark
+    for k in range(7):
+        a = 2 * math.pi * k / 7
+        r = 1.15 + 0.15 * (k % 3)
+        shard = bipyramid(0, 0, 0, 0.35, 0.3 + 0.1 * (k % 2), 0.22, CHITIN_DK, sides=4, top=CHARRED)
+        t += transform(shard, rot_y=a, rot_z=0.5, offset=(math.sin(a) * r, 0.1, math.cos(a) * r))
+    t += cylinder(0, 0.0, 0, 0.6, 0.05, 6, CHARRED, cap_color=PIT)
+    return shade_by_facing(t)
+
+
+def terminal():
+    """Uplink terminal, ~1.6 m: an armored console with a slanted screen and
+    an antenna mast with a beacon light. Fits TERMINAL_RADIUS (0.7 m)."""
+    t = []
+    t += box(0, 0.06, 0, 1.2, 0.12, 1.0, ARMOR_DARK, bottom_face=False)         # plinth
+    t += box(0, 0.5, 0.05, 0.9, 0.8, 0.6, ARMOR, top=ARMOR_DARK, bottom_face=False)
+    screen = box(0, 0, 0, 0.8, 0.05, 0.45, ARMOR_DARK, top=VISOR, bottom_face=False)
+    t += transform(screen, rot_x=-0.6, offset=(0, 1.0, -0.22))
+    t += box(0, 0.62, -0.26, 0.7, 0.06, 0.04, AMBER, bottom_face=False)        # hazard strip
+    t += cylinder(0.32, 0.9, 0.2, 0.04, 0.9, 4, GUN)                             # mast
+    t += ellipsoid(0.32, 1.85, 0.2, 0.08, 0.08, 0.08, THRUSTER, rings=3, segments=4)
+    for x in (-0.45, 0.45):
+        t += box(x, 0.3, 0.3, 0.1, 0.5, 0.1, AMBER, bottom_face=False)          # corner guards
+    return t
+
+
 def rock(seed, base_color, size):
     rnd = random.Random(seed)
     table = {}
@@ -622,6 +688,9 @@ MODELS = {
     "rock_c": lambda: rock(37, ROCK_C, 1.0),
     "ground": arena_floor,
     "shadow": shadow,
+    "nest": nest,
+    "nest_dead": nest_dead,
+    "terminal": terminal,
 }
 
 # ---------------------------------------------------------------------------

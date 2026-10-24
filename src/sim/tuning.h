@@ -27,6 +27,7 @@
 #define ZONE_DIST_MIN        15.0f   // zones and the LZ sit this far from the drop zone
 #define ZONE_DIST_MAX        22.0f
 #define SITE_SPACING         15.0f   // and at least this far from each other
+#define SITE_SPACING_CROWDED 12.0f   // ...with four or more sites (LZ included)
 #define SITE_EDGE            7.0f    // and this far inside the arena edge
 
 // --- Controls ---
@@ -157,13 +158,30 @@
 #define EXTRACT_HOLD_TICKS   SECONDS(75.0f)  // from the extraction call to touchdown
 #define DROPSHIP_DESCENT     SECONDS(4.0f)   // seen coming down for this long before it lands
 #define HOLD_WAVE_SPEEDUP    3       // during the hold, wave breaks and group intervals are this much shorter
-#define QUICK_MISSION_DIV    5       // debug: quick mission divides capture and hold times
+#define QUICK_MISSION_DIV    5       // debug: quick mission divides capture, nest, upload and hold times
+
+// Nests (OBJ_NESTS)
+#define NEST_RADIUS          1.6f    // solid for troopers and bullets; bugs crawl out of it
+#define NEST_HP              800.0f
+#define NEST_BULLET_MULT     0.5f    // bullets do half damage to a nest; explosions full
+#define NEST_WAKE_RADIUS     18.0f   // a trooper this close wakes it (so does hurting it)
+#define NEST_SPAWN_TICKS     SECONDS(7.0f)  // between groups once awake (difficulty cadence scales it)
+#define NEST_FIRST_TICKS     SECONDS(1.5f)  // first group after waking
+
+// Upload (OBJ_UPLOAD)
+#define UPLOAD_RADIUS        6.0f    // enter the code and stay inside this ring
+#define UPLOAD_STAGE_TICKS   SECONDS(20.0f) // per stage, while someone is in the ring
+#define UPLOAD_CODE_LEN      6
+#define UPLOAD_WAVE_SPEEDUP  2       // waves come this much faster while a stage uploads
+#define TERMINAL_RADIUS      0.7f    // the console itself is solid
 
 // --- Score ---
 #define SCORE_KILL_SKITTER   10
 #define SCORE_KILL_GNASHER   25
 #define SCORE_KILL_BULWARK   60
 #define SCORE_ZONE           500     // per zone held
+#define SCORE_NEST           400     // per nest destroyed
+#define SCORE_STAGE          400     // per upload stage
 #define SCORE_EXTRACTED      2000    // the dropship got away
 #define SCORE_ABOARD         500     // per trooper on it
 #define SCORE_PAR_SECONDS    600     // a successful mission scores time bonus below this
@@ -175,6 +193,12 @@
 #define BOT_KITE_RANGE       4.0f
 #define BOT_FOLLOW_DIST      3.0f
 #define BOT_FF_CLEARANCE     0.6f    // a bot holds fire when a teammate is this close to its line
+#define BOT_NEST_STANDOFF    7.0f    // the leading bot shoots a nest from this far
+#define BOT_CRATE_RANGE      20.0f   // nearly out of ammo: walk to a resupply crate this close, or call one
+#define BOT_WALL_MARGIN      1.5f    // backing off would end this close to the edge: slide sideways
+#define BOT_SENTRY_BUGS      8       // a bot drops a sentry when this many bugs are within...
+#define BOT_SENTRY_RANGE     12.0f
+#define BOT_DROP_CLEARANCE   1.5f    // bots keep this clear of where a drop lands (on top of its crush radius)
 
 // --- Camera (shared, fixed angle) ---
 #define CAM_PITCH_RAD        0.9599f // 55 degrees below horizontal

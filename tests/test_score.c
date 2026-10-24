@@ -17,11 +17,11 @@ void test_score_breakdown(void)
     m->stats.reinforcements = 2;
     mission_score_t sc = mission_score(&s);
     CHECK_EQ_INT(sc.kills, 10 * SCORE_KILL_SKITTER + 4 * SCORE_KILL_GNASHER + SCORE_KILL_BULWARK);
-    CHECK_EQ_INT(sc.zones, SCORE_ZONE);
+    CHECK_EQ_INT(sc.objective, SCORE_ZONE);
     CHECK_EQ_INT(sc.extraction, 0); // not extracted (yet)
     CHECK_EQ_INT(sc.time, 0);
     CHECK_EQ_INT(sc.reinforcements, -2 * SCORE_REINFORCEMENT);
-    CHECK_EQ_INT(sc.total, sc.kills + sc.zones + sc.reinforcements);
+    CHECK_EQ_INT(sc.total, sc.kills + sc.objective + sc.reinforcements);
 
     // A success: the dropship bonus, each trooper aboard, and the time bonus.
     m->zones[1].captured = true;
@@ -117,9 +117,13 @@ void test_hiscore_sanitize(void)
     hiscore_defaults(&t);
     t.entries[7].score = 999999;
     t.entries[7].initials[1] = '\x07';
+    t.entries[7].difficulty = 200;
+    t.entries[7].objective = 99;
     hiscore_sanitize(&t);
     CHECK_EQ_INT((int)t.entries[0].score, 999999);
     CHECK_EQ_INT(t.entries[0].initials[1], ' ');
+    CHECK(t.entries[0].difficulty < DIFFICULTY_COUNT);
+    CHECK(t.entries[0].objective < OBJ_COUNT);
     for (int i = 1; i < HISCORE_COUNT; i++)
         CHECK(t.entries[i - 1].score >= t.entries[i].score);
 }

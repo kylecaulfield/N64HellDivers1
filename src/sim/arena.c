@@ -8,12 +8,12 @@ const float rock_radius[ROCK_KIND_COUNT] = {
 };
 
 // A point ZONE_DIST_MIN..MAX from the drop zone, inside the arena, at
-// least SITE_SPACING from the sites placed before it.
-static vec2 place_site(rng_t *rng, const vec2 *placed, int n)
+// least `spacing` from the sites placed before it.
+static vec2 place_site(rng_t *rng, const vec2 *placed, int n, float spacing)
 {
     const float lim = ARENA_HALF_SIZE - SITE_EDGE;
     vec2 p = v2(0.0f, 0.0f);
-    for (int tries = 0; tries < 64; tries++) {
+    for (int tries = 0; tries < 128; tries++) {
         float ang = rng_float(rng) * 6.2832f;
         float d = ZONE_DIST_MIN + rng_float(rng) * (ZONE_DIST_MAX - ZONE_DIST_MIN);
         p = v2_rotate(v2(d, 0.0f), ang);
@@ -21,23 +21,30 @@ static vec2 place_site(rng_t *rng, const vec2 *placed, int n)
             continue;
         bool ok = true;
         for (int i = 0; i < n && ok; i++)
-            ok = v2_dist2(p, placed[i]) >= SITE_SPACING * SITE_SPACING;
+            ok = v2_dist2(p, placed[i]) >= spacing * spacing;
         if (ok)
             return p;
     }
-    return p; // spacing not met in 64 tries: unreachable with these numbers
+    return p; // spacing not met in 128 tries: unreachable with these numbers (see test_arena.c)
 }
 
-void arena_generate(arena_t *a, rng_t *rng)
+void arena_generate(arena_t *a, rng_t *rng, int site_count)
 {
     a->min = v2(-ARENA_HALF_SIZE, -ARENA_HALF_SIZE);
     a->max = v2(ARENA_HALF_SIZE, ARENA_HALF_SIZE);
     a->obstacle_count = 0;
+    if (site_count < 1) site_count = 1;
+    if (site_count > ARENA_SITES) site_count = ARENA_SITES;
+    a->site_count = (uint8_t)site_count;
 
-    vec2 sites[MISSION_ZONES + 1];
-    for (int i = 0; i < MISSION_ZONES; i++)
-        sites[i] = a->zones[i] = place_site(rng, sites, i);
-    sites[MISSION_ZONES] = a->lz = place_site(rng, sites, MISSION_ZONES);
+    // Four or five sites only fit the ring around the drop zone closer together.
+    const float spacing = site_count + 1 > 3 ? SITE_SPACING_CROWDED : SITE_SPACING;
+    vec2 sites[ARENA_SITES + 1];
+    for (int i = 0; i < site_count; i++)
+        sites[i] = a->sites[i] = place_site(rng, sites, i, spacing);
+    for (int i = site_count; i < ARENA_SITES; i++)
+        a->sites[i] = v2(0.0f, 0.0f);
+    sites[site_count] = a->lz = place_site(rng, sites, site_count, spacing);
 
     const float edge = 2.0f;  // keep rocks off the boundary
     const float gap = 3.0f;   // walkable space between rocks
@@ -49,8 +56,8 @@ void arena_generate(arena_t *a, rng_t *rng)
         if (v2_len2(p) < (ARENA_CLEAR_RADIUS + r) * (ARENA_CLEAR_RADIUS + r))
             continue;
         bool ok = true;
-        for (int i = 0; i <= MISSION_ZONES && ok; i++) {
-            float clear = (i == MISSION_ZONES ? ARENA_CLEAR_RADIUS : ZONE_CLEAR_RADIUS) + r;
+        for (int i = 0; i <= site_count && ok; i++) {
+            float clear = (i == site_count ? ARENA_CLEAR_RADIUS : ZONE_CLEAR_RADIUS) + r;
             ok = v2_dist2(sites[i], p) >= clear * clear;
         }
         for (int i = 0; i < a->obstacle_count && ok; i++) {

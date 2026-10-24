@@ -55,7 +55,9 @@ void frontend_options(int cursor, const settings_t *s, int erase);
 void frontend_credits(void);
 // highlight: rank to blink, or -1. footer: what START/B do here.
 void frontend_scores(const hiscore_table_t *t, int highlight, uint32_t frames, const char *footer);
-void frontend_briefing(const briefing_t *b, uint8_t humans, uint8_t connected, bool bots, uint32_t frames);
+// The squad, objective and difficulty come from the mission already
+// generated in `sim`.
+void frontend_briefing(const briefing_t *b, const sim_t *sim, uint8_t connected, uint32_t frames);
 void frontend_initials(const char initials[3], int pos, uint32_t score, int rank, uint32_t frames);
 
 #define ERASE_HOLD 45   // frames to hold A to erase the high scores

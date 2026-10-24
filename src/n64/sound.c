@@ -216,6 +216,13 @@ void sound_events(const sim_t *s)
         case EV_PICKUP:        at(s, SFX_PICKUP, 3, 0.8f, e->pos); break;
         case EV_REINFORCED:    play(SFX_RADIO, 3, 0.7f, 0.5f); break;
         case EV_ZONE_CAPTURED: play(SFX_ZONE, 4, 0.9f, 0.5f); break;
+        case EV_NEST_HIT:
+            if (hits++ < 2)
+                at(s, SFX_BUG_HIT, 0, 0.45f, e->pos);
+            break;
+        case EV_NEST_DESTROYED: at(s, SFX_EXPLOSION, 4, 1.0f, e->pos); break;
+        case EV_UPLOAD_START:   play(SFX_RADIO, 4, 0.8f, 0.5f); break;
+        case EV_UPLOAD_STAGE:   play(SFX_ZONE, 4, 0.9f, 0.5f); break;
         case EV_EXTRACTED:     at(s, SFX_PICKUP, 3, 0.7f, e->pos); break;
         case EV_MISSION:
             if (e->a == MISSION_EXTRACT || e->a == MISSION_BOARDING)

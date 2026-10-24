@@ -1,8 +1,11 @@
 #include "waves.h"
+#include "difficulty.h"
 #include "enemy.h"
 #include "flow.h"
+#include "mission.h"
 
-void wave_composition(int wave, uint16_t out[ENEMY_TYPE_COUNT])
+// The standard ramp.
+static void base_composition(int wave, uint16_t out[ENEMY_TYPE_COUNT])
 {
     static const uint16_t early[3][ENEMY_TYPE_COUNT] = {
         { 6, 3, 0 },
@@ -20,6 +23,18 @@ void wave_composition(int wave, uint16_t out[ENEMY_TYPE_COUNT])
     out[ENEMY_SKITTER] = (uint16_t)(14 + 4 * k);
     out[ENEMY_GNASHER] = (uint16_t)(7 + 2 * k);
     out[ENEMY_BULWARK] = (uint16_t)(1 + k / 2);
+}
+
+void wave_composition(int wave, int difficulty, int troopers, uint16_t out[ENEMY_TYPE_COUNT])
+{
+    // Percent of the wave by squad size (bots count): the standard waves are
+    // tuned for three troopers.
+    static const int SQUAD[SIM_MAX_PLAYERS] = { 70, 85, 100, 115 };
+    const difficulty_def_t *d = &difficulty_defs[difficulty < DIFFICULTY_COUNT ? difficulty : DIFFICULTY_STANDARD];
+    troopers = troopers < 1 ? 1 : troopers > SIM_MAX_PLAYERS ? SIM_MAX_PLAYERS : troopers;
+    base_composition(wave + d->wave_offset, out);
+    for (int t = 0; t < ENEMY_TYPE_COUNT; t++)
+        out[t] = (uint16_t)((out[t] * d->wave_size * SQUAD[troopers - 1] + 5000) / 10000);
 }
 
 void waves_reset(sim_t *s)
@@ -50,7 +65,7 @@ static void start_wave(sim_t *s)
     w->number++;
     w->state = WAVE_ACTIVE;
     w->timer = 0;
-    wave_composition(w->number, w->remaining);
+    wave_composition(w->number, s->mission.difficulty, s->counts.players, w->remaining);
     w->total = 0;
     for (int t = 0; t < ENEMY_TYPE_COUNT; t++)
         w->total = (uint16_t)(w->total + w->remaining[t]);
@@ -89,8 +104,12 @@ void waves_update(sim_t *s)
     if (!s->settings.waves || s->mission.phase == MISSION_DROP)
         return;
     waves_t *w = &s->waves;
-    // Holding out for the dropship: shorter breaks, groups more often.
-    int speedup = s->mission.phase == MISSION_HOLD || s->mission.phase == MISSION_BOARDING ? HOLD_WAVE_SPEEDUP : 1;
+    // Holding out for the dropship (or uploading): shorter breaks, groups
+    // more often. Harder levels shorten them too.
+    int speedup = s->mission.phase == MISSION_HOLD || s->mission.phase == MISSION_BOARDING ? HOLD_WAVE_SPEEDUP
+                  : mission_upload_running(s)                                             ? UPLOAD_WAVE_SPEEDUP
+                                                                                          : 1;
+    int cadence = sim_difficulty(s)->cadence;
     if (w->timer) {
         w->timer--;
         return;
@@ -101,9 +120,9 @@ void waves_update(sim_t *s)
     }
     if (remaining_total(w) > 0) {
         spawn_group(s);
-        w->timer = (uint16_t)(WAVE_GROUP_INTERVAL / speedup);
+        w->timer = (uint16_t)(WAVE_GROUP_INTERVAL * cadence / 100 / speedup);
     } else if (s->counts.enemies <= w->total / WAVE_CLEAR_DIVISOR) {
         w->state = WAVE_BREAK;
-        w->timer = (uint16_t)(WAVE_BREAK_TICKS / speedup);
+        w->timer = (uint16_t)(WAVE_BREAK_TICKS * cadence / 100 / speedup);
     }
 }

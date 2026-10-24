@@ -6,6 +6,7 @@
 #include "bot.h"
 #include "calldown.h"
 #include "camera.h"
+#include "difficulty.h"
 #include "enemy.h"
 #include "flow.h"
 #include "grid.h"
@@ -24,9 +25,9 @@ static void start(sim_t *s, uint32_t seed, uint8_t humans)
 {
     rng_seed(&s->rng, seed);
     s->humans = humans;
-    s->reinforcements = REINFORCE_POOL;
     s->squad = SQUAD_FIGHTING;
-    arena_generate(&s->arena, &s->rng);
+    arena_generate(&s->arena, &s->rng,
+                   difficulty_sites(s->settings.difficulty, (objective_type_t)s->settings.objective));
     flow_init(&s->flow, &s->arena);
     waves_reset(s);
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
@@ -37,6 +38,7 @@ static void start(sim_t *s, uint32_t seed, uint8_t humans)
         sim_spawn_player(s, i, DROP_SLOT[i]);
     }
     mission_init(s);
+    s->reinforcements = sim_difficulty(s)->reinforcements;
     camera_reset(s);
     sim_update_counts(s);
     grid_build(s);
@@ -48,6 +50,7 @@ void sim_init(sim_t *s, uint32_t seed)
     s->settings.enemy_cap = SIM_ENEMY_CAP_DEFAULT;
     s->settings.flow_budget = FLOW_BUDGET_DEFAULT;
     s->settings.waves = true;
+    s->settings.difficulty = DIFFICULTY_STANDARD;
     start(s, seed, 1u);
 }
 

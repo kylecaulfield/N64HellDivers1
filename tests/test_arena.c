@@ -9,7 +9,7 @@ void test_arena_rocks_valid(void)
         rng_t rng;
         rng_seed(&rng, seed);
         arena_t a;
-        arena_generate(&a, &rng);
+        arena_generate(&a, &rng, 2);
         CHECK(a.obstacle_count > ARENA_ROCK_COUNT / 2);
         CHECK(a.obstacle_count <= ARENA_ROCK_COUNT);
         for (int i = 0; i < a.obstacle_count; i++) {
@@ -32,7 +32,7 @@ void test_arena_deterministic(void)
     arena_t a, b;
     memset(&a, 0, sizeof(a));
     memset(&b, 0, sizeof(b));
-    arena_generate(&a, &r1);
-    arena_generate(&b, &r2);
+    arena_generate(&a, &r1, 2);
+    arena_generate(&b, &r2, 2);
     CHECK(memcmp(&a, &b, sizeof(a)) == 0);
 }

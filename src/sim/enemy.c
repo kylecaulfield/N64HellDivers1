@@ -1,6 +1,7 @@
 #include "enemy.h"
 #include "arena.h"
 #include "collide.h"
+#include "difficulty.h"
 #include "flow.h"
 #include "grid.h"
 #include "sim_internal.h"
@@ -184,7 +185,7 @@ static void update_one(sim_t *s, enemy_t *e)
         e->facing = v2_norm_or(to, e->facing);
         if (--e->timer == 0) {
             if (d2 < def->melee_reach * def->melee_reach)
-                player_damage(s, target, def->damage);
+                player_damage(s, target, def->damage * (float)sim_difficulty(s)->damage / 100.0f);
             e->state = ESTATE_RECOVER;
             e->timer = def->recover;
         }

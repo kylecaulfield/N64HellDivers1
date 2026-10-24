@@ -18,6 +18,9 @@ Makefile changes are needed.
 | `pod.glb` | Drop pod: the squad's drop-in at the start of a mission, and Reinforce (seen falling onto its beacon) |
 | `rock_a.glb`, `rock_b.glb`, `rock_c.glb` | Arena obstacles. Collision radii are 0.9, 1.35 and 0.55 m (`rock_radius` in `src/sim/arena.c`); keep a replacement about that size or update the table |
 | `ground.glb` | The whole 64x64 m arena floor, centred on the origin (the placeholder has grass tufts and pebbles: 842 triangles, drawn once per frame) |
+| `nest.glb` | Bug nest (OBJ_NESTS): solid out to 1.6 m (`NEST_RADIUS`), where bugs crawl out. Up to four on screen |
+| `nest_dead.glb` | What is left of a destroyed nest: walkable, flat |
+| `terminal.glb` | Uplink terminal (OBJ_UPLOAD): solid out to 0.7 m (`TERMINAL_RADIUS`) |
 | `shadow.glb` | Blob shadow: a flat dark disc, 1 m radius, facing up. Scaled and drawn under soldiers, pods and drops (shrinking as they fall) and the dropship |
 
 The bugs carry their own shadow: a flat dark disc in the mesh, weighted to

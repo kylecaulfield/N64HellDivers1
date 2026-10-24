@@ -48,6 +48,18 @@ typedef enum { SCHEME_A, SCHEME_B, SCHEME_COUNT } control_scheme_t;
 typedef enum { WEAPON_RIFLE, WEAPON_SHOTGUN, WEAPON_MACHINE_GUN, WEAPON_COUNT } weapon_type_t;
 typedef enum { ENEMY_SKITTER, ENEMY_GNASHER, ENEMY_BULWARK, ENEMY_TYPE_COUNT } enemy_type_t;
 
+// What the squad drops in to do before it can call extraction (mission.h).
+typedef enum {
+    OBJ_ZONES,   // hold the zones
+    OBJ_NESTS,   // destroy the nests
+    OBJ_UPLOAD,  // upload data at the terminal, in stages
+    OBJ_COUNT
+} objective_type_t;
+
+// Difficulty levels (difficulty.h has what each changes).
+#define DIFFICULTY_COUNT    5
+#define DIFFICULTY_STANDARD 1
+
 // --- Players -----------------------------------------------------------------
 
 typedef enum {
@@ -283,7 +295,8 @@ typedef struct {
     float   yaw;     // visual only
 } obstacle_t;
 
-#define MISSION_ZONES 2
+// Objective sites per mission at most: zones, nests or the terminal.
+#define ARENA_SITES 4
 
 typedef struct {
     vec2       min, max;
@@ -291,7 +304,8 @@ typedef struct {
     int        obstacle_count;
     // Mission sites, placed before the rocks, which keep clear of them. The
     // drop zone is the origin.
-    vec2       zones[MISSION_ZONES];
+    vec2       sites[ARENA_SITES];  // the objective's: zones, nests or the terminal
+    uint8_t    site_count;
     vec2       lz;
 } arena_t;
 
@@ -299,7 +313,7 @@ typedef struct {
 
 typedef enum {
     MISSION_DROP,       // players riding pods down
-    MISSION_OBJECTIVE,  // hold both zones
+    MISSION_OBJECTIVE,  // zones, nests or upload (objective_type_t)
     MISSION_EXTRACT,    // objective done: call extraction from inside the LZ
     MISSION_HOLD,       // extraction called: survive until the dropship lands
     MISSION_BOARDING,   // dropship down: living players get into the LZ
@@ -313,6 +327,27 @@ typedef struct {
     uint8_t  players_in;  // this tick
     uint8_t  bugs_in;
 } zone_state_t;
+
+// A bug nest: spawns groups while a trooper is near (or once it is hurt)
+// until it is destroyed.
+typedef struct {
+    float    hp;
+    bool     destroyed;
+    bool     awake;
+    uint16_t timer;       // ticks to its next group
+} nest_t;
+
+// The terminal: enter its code from inside the ring, then keep someone in
+// the ring while the stage uploads. A new code for each stage.
+typedef struct {
+    uint8_t  stage;       // stages done
+    uint8_t  stages;
+    bool     running;     // the code was entered: this stage is uploading
+    uint16_t progress;    // ticks uploaded in this stage
+    uint8_t  players_in;  // this tick
+    uint8_t  code[CALLDOWN_CODE_MAX];
+    uint8_t  code_len;
+} upload_t;
 
 // Per port, for the results screen.
 typedef struct {
@@ -332,9 +367,13 @@ typedef struct {
 } mission_stats_t;
 
 typedef struct {
-    uint8_t         phase;    // mission_phase_t
-    uint16_t        timer;    // ticks left in DROP / HOLD
-    zone_state_t    zones[MISSION_ZONES];
+    uint8_t         phase;     // mission_phase_t
+    uint8_t         objective; // objective_type_t
+    uint8_t         difficulty;
+    uint16_t        timer;     // ticks left in DROP / HOLD
+    zone_state_t    zones[ARENA_SITES];   // OBJ_ZONES, one per site
+    nest_t          nests[ARENA_SITES];   // OBJ_NESTS, one per site
+    upload_t        upload;               // OBJ_UPLOAD, at site 0
     uint8_t         extracted; // bit per player aboard the dropship
     bool            assisted;  // a debug aid was on at some point: no high score
     mission_stats_t stats;
@@ -366,6 +405,10 @@ typedef enum {
     EV_PICKUP,        // pos = pickup, a = pickup type
     EV_REINFORCED,    // pos = drop point, a = player index
     EV_ZONE_CAPTURED, // pos = zone, a = zone index
+    EV_NEST_HIT,      // pos = impact point, a = nest index
+    EV_NEST_DESTROYED,// pos = nest, a = nest index
+    EV_UPLOAD_START,  // pos = terminal, a = player who entered the code
+    EV_UPLOAD_STAGE,  // pos = terminal, a = stages done
     EV_MISSION,       // a = the mission_phase_t just entered
     EV_EXTRACTED,     // pos = player, a = player index (boarded the dropship)
 } sim_event_type_t;
@@ -390,6 +433,8 @@ typedef struct {
 
 typedef struct {
     uint8_t  scheme[SIM_MAX_PLAYERS]; // control_scheme_t per port
+    uint8_t  difficulty;              // 0..DIFFICULTY_COUNT-1, for the next mission
+    uint8_t  objective;               // objective_type_t, for the next mission
     bool     god_mode;
     bool     infinite_ammo;
     bool     waves;                   // wave spawner on

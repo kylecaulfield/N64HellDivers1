@@ -3,7 +3,7 @@
 #include <libdragon.h>
 #include <string.h>
 
-#define SETTINGS_VERSION 1
+#define SETTINGS_VERSION 2
 
 static const eepfs_entry_t FILES[] = {
     { .path = "/settings", .size = sizeof(settings_t), .checksum = true, .backup = true },
@@ -16,7 +16,8 @@ static bool available;
 
 static void settings_defaults(void)
 {
-    settings = (settings_t){ .music = 7, .sfx = 8, .bots = 0, .version = SETTINGS_VERSION };
+    // A new player starts on the easiest level; the briefing changes it.
+    settings = (settings_t){ .music = 7, .sfx = 8, .bots = 0, .version = SETTINGS_VERSION, .difficulty = 0 };
 }
 
 static void clamp_settings(void)
@@ -24,6 +25,8 @@ static void clamp_settings(void)
     if (settings.music > 10) settings.music = 7;
     if (settings.sfx > 10) settings.sfx = 8;
     settings.bots = settings.bots ? 1 : 0;
+    if (settings.difficulty >= DIFFICULTY_COUNT)
+        settings.difficulty = 0;
     for (int i = 0; i < SIM_MAX_PLAYERS; i++)
         if (settings.scheme[i] >= SCHEME_COUNT)
             settings.scheme[i] = SCHEME_A;

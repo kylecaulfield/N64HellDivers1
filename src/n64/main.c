@@ -16,6 +16,7 @@
 #include "autotest.h"
 #include "bench.h"
 #include "boot.h"
+#include "difficulty.h"
 #include "frontend.h"
 #include "fx.h"
 #include "gpu_timing.h"
@@ -170,14 +171,24 @@ static void apply_settings(void)
     for (int p = 0; p < SIM_MAX_PLAYERS; p++)
         sim.settings.scheme[p] = st->scheme[p];
     sim.settings.bots = st->bots;
+    sim.settings.difficulty = st->difficulty;
     sound_set_volumes(st->music, st->sfx);
+}
+
+// A new attract demo: a random objective at the standard level.
+static void new_demo(void)
+{
+    uint32_t seed = new_seed();
+    sim.settings.objective = (uint8_t)((seed >> 5) % OBJ_COUNT);
+    sim.settings.difficulty = DIFFICULTY_STANDARD;
+    sim_demo(&sim, seed);
+    world_changed();
 }
 
 static void to_title(void)
 {
     overlay_clear_heap_baseline();
-    sim_demo(&sim, new_seed());
-    world_changed();
+    new_demo();
     paused = false;
     sound_duck(false);
     sound_music(MUSIC_TITLE);
@@ -192,6 +203,10 @@ static void to_briefing(uint8_t humans)
     mission_seed = new_seed();
     briefing_make(&brief, mission_seed);
     apply_settings();
+    sim.settings.objective = (uint8_t)((mission_seed >> 7) % OBJ_COUNT);
+#ifdef AUTOTEST
+    sim.settings.objective = (uint8_t)autotest_objective();
+#endif
     sim.humans = humans | 1u;
     sim_restart(&sim, mission_seed);
     world_changed();
@@ -392,8 +407,23 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
                 sound_ui(UI_BACK);
             }
         }
+        // Player 1 picks the difficulty (the mission is generated again: the
+        // number of sites and the reinforcements depend on it). `n` repeats
+        // held directions for every controller: take the ones P1 holds.
+        const sim_input_t *i1 = &in->ports[0];
+        bool p1_left = (i1->held & SIM_BTN_DLEFT) || i1->stick_x < -50;
+        bool p1_right = (i1->held & SIM_BTN_DRIGHT) || i1->stick_x > 50;
+        int diff = (int)st->difficulty + (n.right && p1_right ? 1 : n.left && p1_left ? -1 : 0);
+        if (diff != st->difficulty && diff >= 0 && diff < DIFFICULTY_COUNT) {
+            st->difficulty = (uint8_t)diff;
+            sim.settings.difficulty = st->difficulty;
+            sim_restart(&sim, mission_seed);
+            world_changed();
+            sound_ui(UI_MOVE);
+        }
         if ((in->ports[0].pressed & (SIM_BTN_START | SIM_BTN_A)) && screen_frames > 15) {
             sound_ui(UI_SELECT);
+            save_write_settings();
             to_mission();
         } else if (in->ports[0].pressed & SIM_BTN_B) {
             sound_ui(UI_BACK);
@@ -425,6 +455,8 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
                 squad += sim.players[i].active || (sim.mission.extracted & (1u << i));
             e.squad = (uint8_t)squad;
             e.flags = sim.mission.phase == MISSION_SUCCESS ? HISCORE_EXTRACTED : 0;
+            e.difficulty = sim.mission.difficulty;
+            e.objective = sim.mission.objective;
             int rank = hiscore_insert(save_scores(), &e);
             save_write_scores();
             save_write_settings();
@@ -458,7 +490,7 @@ static void draw_2d(uint8_t connected)
         frontend_scores(save_scores(), highlight, screen_frames,
                         scores_attract ? NULL : after_mission ? "START NEXT MISSION    B TITLE" : "B BACK");
         break;
-    case SCREEN_BRIEFING: frontend_briefing(&brief, sim.humans, connected, sim.settings.bots, screen_frames); break;
+    case SCREEN_BRIEFING: frontend_briefing(&brief, &sim, connected, screen_frames); break;
     case SCREEN_MISSION:
         hud_draw(&sim, paused && !menu_is_open(), connected, paused ? quit_hold * 100 / QUIT_HOLD_FRAMES : 0);
         if (was_over && over_frames >= RESULTS_DELAY)
@@ -511,6 +543,10 @@ int main(void)
 
 #ifdef BENCH_AT_BOOT
     to_briefing(1);
+    // Always the same mission, whatever the save says, so benches compare.
+    sim.settings.objective = OBJ_ZONES;
+    sim.settings.difficulty = DIFFICULTY_STANDARD;
+    sim_restart(&sim, mission_seed);
     to_mission();
 #else
     enter(SCREEN_SPLASH);
@@ -572,10 +608,8 @@ int main(void)
         uint64_t t_sim = get_ticks();
         sound_update();
 
-        if (demo && (mission_over(&sim) || screen_frames % DEMO_FRAMES == DEMO_FRAMES - 1)) {
-            sim_demo(&sim, new_seed());
-            world_changed();
-        }
+        if (demo && (mission_over(&sim) || screen_frames % DEMO_FRAMES == DEMO_FRAMES - 1))
+            new_demo();
         if (screen == SCREEN_MISSION) {
             if (++mission_frames == HEAP_BASELINE_FRAME)
                 overlay_set_heap_baseline();

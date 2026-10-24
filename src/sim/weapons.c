@@ -2,6 +2,7 @@
 
 #include <math.h>
 
+#include "mission.h"
 #include "sim_internal.h"
 
 const weapon_def_t weapon_defs[WEAPON_COUNT] = {
@@ -61,6 +62,24 @@ vec2 aim_assist(const sim_t *s, vec2 origin, vec2 dir, control_scheme_t scheme)
         if (score > best_score) {
             best_score = score;
             best = i;
+            best_dir = to_n;
+        }
+    }
+    // Nests too: they are big, but an 8-way aim can still miss one.
+    for (int n = 0; n < s->arena.site_count; n++) {
+        if (!mission_nest_live(s, n))
+            continue;
+        vec2 to = v2_sub(s->arena.sites[n], origin);
+        float d2 = v2_len2(to);
+        if (d2 > AIM_RANGE * AIM_RANGE || d2 < 1e-6f)
+            continue;
+        float d = sqrtf(d2);
+        vec2 to_n = v2_scale(to, 1.0f / d);
+        float c = v2_dot(dir, to_n);
+        float score = c - 0.05f * (d / AIM_RANGE);
+        if (c >= min_cos && score > best_score) {
+            best_score = score;
+            best = SIM_MAX_ENEMIES + n;
             best_dir = to_n;
         }
     }

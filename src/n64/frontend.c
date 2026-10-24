@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "difficulty.h"
 #include "overlay.h"
 #include "palette.h"
 #include "ui.h"
@@ -84,6 +85,10 @@ static const char *const TIPS[] = {
     "THE SENTRY SHOOTS WHATEVER IS IN ITS LINE OF FIRE.",
     "DIVE (A OR Z) TO GET OUT OF A GNASHER'S REACH.",
     "THE DROPSHIP WAITS FOR EVERYONE STILL ALIVE ON THE GROUND.",
+    "BULLETS ONLY SCRATCH A NEST. AIRSTRIKES AND BARRAGES DON'T.",
+    "A NEST WAKES WHEN YOU COME NEAR OR SHOOT IT.",
+    "THE UPLOAD PAUSES WHEN NOBODY IS INSIDE THE TERMINAL'S RING.",
+    "HARDER LEVELS MULTIPLY YOUR SCORE.",
 };
 
 void briefing_make(briefing_t *b, uint32_t seed)
@@ -215,34 +220,57 @@ void frontend_scores(const hiscore_table_t *t, int highlight, uint32_t frames, c
     ui_box(24, 26, 296, 214);
     ui_heading(50, STYLE_TITLE, "HIGH SCORES");
     char text[640];
-    int at = snprintf(text, sizeof(text), "^03RANK  NAME   SCORE   WAVES  SQUAD^00");
+    static const char *const LEVEL[DIFFICULTY_COUNT] = { "RCN", "STD", "HAZ", "SEV", "HVB" };
+    static const char *const OBJ[OBJ_COUNT] = { "ZONES", "NESTS", "UPLOAD" };
+    int at = snprintf(text, sizeof(text), "^03  #  WHO   SCORE  LVL  OBJ     WAV  SQD^00");
     for (int i = 0; i < HISCORE_COUNT && at < (int)sizeof(text) - 64; i++) {
         const hiscore_entry_t *e = &t->entries[i];
         bool blink = i == highlight && (frames / 8) % 2;
         int style = i == highlight ? (blink ? STYLE_NORMAL : STYLE_GOOD) : i == 0 ? STYLE_TITLE : STYLE_NORMAL;
-        at += snprintf(text + at, sizeof(text) - (size_t)at, "\n^%02X %2d.  %.3s  %7lu   %3u    %u%s^00", style, i + 1,
-                       e->initials, (unsigned long)e->score, e->waves, e->squad,
-                       (e->flags & HISCORE_EXTRACTED) ? "  EVAC" : "");
+        at += snprintf(text + at, sizeof(text) - (size_t)at, "\n^%02X%2d.  %.3s  %6lu  %s  %-6s  %3u  %3u%s^00", style,
+                       i + 1, e->initials, (unsigned long)e->score, LEVEL[e->difficulty % DIFFICULTY_COUNT],
+                       OBJ[e->objective % OBJ_COUNT], e->waves, e->squad, (e->flags & HISCORE_EXTRACTED) ? "*" : "");
     }
-    rdpq_text_printf(&(rdpq_textparms_t){ .line_spacing = 12 - FONT_LINE_H }, FONT, 50, 72, "%s", text);
+    at += snprintf(text + at, sizeof(text) - (size_t)at, "\n^03%39s^00", "* EXTRACTED");
+    rdpq_text_printf(&(rdpq_textparms_t){ .line_spacing = 11 - FONT_LINE_H }, FONT, 40, 68, "%s", text);
     if (footer)
         rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM },
                          FONT, 0, 206, "%s", footer);
 }
 
-void frontend_briefing(const briefing_t *b, uint8_t humans, uint8_t connected, bool bots, uint32_t frames)
+void frontend_briefing(const briefing_t *b, const sim_t *sim, uint8_t connected, uint32_t frames)
 {
+    uint8_t humans = sim->humans;
+    bool bots = sim->settings.bots;
+    const mission_t *m = &sim->mission;
     ui_stars(frames);
     ui_planet(218, 12);
     rdpq_text_printf(&(rdpq_textparms_t){ .style_id = STYLE_DIM }, FONT, 20, 36, "MISSION BRIEFING");
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 190, .style_id = STYLE_TITLE, .wrap = WRAP_WORD },
                      FONT_HEADING, 20, 58, "%s", b->operation);
     rdpq_text_printf(&(rdpq_textparms_t){ .style_id = STYLE_DIM }, FONT, 20, 100, "PLANET %s", b->planet);
-    rdpq_text_printf(&(rdpq_textparms_t){ .line_spacing = 12 - FONT_LINE_H }, FONT, 20, 118,
-                     "^021^00  HOLD ZONES ^02A^00 AND ^05B^00\n"
+    rdpq_text_printf(&(rdpq_textparms_t){ .width = 300, .align = ALIGN_RIGHT, .style_id = STYLE_DIM }, FONT, 0, 100,
+                     "REINF %u  SCORE X%d.%02d", sim->reinforcements, sim_difficulty(sim)->score / 100,
+                     sim_difficulty(sim)->score % 100);
+    // The first step depends on the objective.
+    char first[64];
+    int n = sim->arena.site_count;
+    if (m->objective == OBJ_NESTS)
+        snprintf(first, sizeof(first), "DESTROY THE %d ^04NESTS^00", n);
+    else if (m->objective == OBJ_UPLOAD)
+        snprintf(first, sizeof(first), "UPLOAD %d STAGES AT THE ^05TERMINAL^00", m->upload.stages);
+    else if (n > 2)
+        snprintf(first, sizeof(first), "HOLD ZONES ^02A^00, ^05B^00 AND ^06C^00");
+    else
+        snprintf(first, sizeof(first), "HOLD ZONES ^02A^00 AND ^05B^00");
+    rdpq_text_printf(&(rdpq_textparms_t){ .line_spacing = 11 - FONT_LINE_H }, FONT, 20, 114,
+                     "^021^00  %s\n"
                      "^022^00  CALL EXTRACTION AT THE LZ: ^02> > ^^ v^00\n"
                      "^023^00  HOLD OUT UNTIL THE DROPSHIP LANDS\n"
-                     "^024^00  GET EVERYONE ABOARD");
+                     "^024^00  GET EVERYONE ABOARD",
+                     first);
+    rdpq_text_printf(NULL, FONT, 20, 162, "^03LEVEL^00 %s^02%s^00%s", m->difficulty > 0 ? "< " : "  ",
+                     difficulty_defs[m->difficulty].name, m->difficulty + 1 < DIFFICULTY_COUNT ? " >" : "");
     // The squad: who's in, who could join.
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         int x = 20 + i * 72, y = 172;
@@ -260,7 +288,7 @@ void frontend_briefing(const briefing_t *b, uint8_t humans, uint8_t connected, b
                      FONT, 20, 218, "TIP: %s", TIPS[b->tip]);
     if ((frames / 20) % 3 != 2)
         rdpq_text_printf(&(rdpq_textparms_t){ .width = 300, .align = ALIGN_RIGHT, .style_id = STYLE_TITLE },
-                         FONT, 0, 160, "P1: START TO DROP");
+                         FONT, 0, 162, "P1: START TO DROP");
 }
 
 void frontend_initials(const char initials[3], int pos, uint32_t score, int rank, uint32_t frames)

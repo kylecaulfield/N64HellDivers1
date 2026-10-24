@@ -9,7 +9,17 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M6**: the whole game around the missions. A loading
+**Status: milestone M7**: three kinds of mission and five difficulty
+levels. Each mission is one of **hold the zones**, **destroy the nests**
+(bug nests that send out the swarm until they are blown apart) or **upload
+the data** (enter the terminal's code, then hold its ring while each stage
+uploads). The level, picked on the briefing, sets the waves, how hard bugs
+hit, the reinforcements, how many zones, nests or stages there are, and a
+score multiplier; waves also scale with the squad's size. Bots got smarter:
+they dodge blows, drop sentries into the swarm, call resupplies, keep their
+drops off teammates and get out from under incoming strikes.
+
+M6 added the whole game around the missions. A loading
 screen at boot, a splash, the title over a live attract demo, a menu,
 options, credits and a high score table; a mission briefing that doubles as
 the loading and join screen; then the mission, its results, initials for a
@@ -94,7 +104,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
-| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that goes through the splash, title, menu and briefing, then moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, enters initials for the high score, checks they reached the save, goes on to the next mission's briefing and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that goes through the splash, title, menu and briefing (stepping the level to STANDARD), then moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, enters initials for the high score, checks they reached the save, then plays a nests mission and an upload mission with bots on every port, and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make BENCH=1` | `hivebreakers-bench.z64`: runs the stress bench by itself 2 s after boot (see below) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
@@ -137,11 +147,11 @@ title says `NO EEPROM: SCORES WON'T BE KEPT` and the game runs on defaults.
 | Title | The logo over the attract demo: bots playing a real mission in the background. Shows the top score. Left alone for 30 s it shows the high score table for 10 s, then comes back; the demo starts a new mission when the last one ends, or every 2 minutes |
 | Menu | **Deploy**, **High scores**, **Options**, **Credits**. Stick or D-pad, A selects, B goes back |
 | Options | Music and sound volume (0-10, left/right), bots fill empty slots (on/off), erase high scores (hold A for 1.5 s), back. Saved to the EEPROM when you leave |
-| Briefing | The loading screen for the mission: a generated operation name and planet, the objectives, the squad and a tip. Controllers 2-4 press START to join (B to leave again); player 1 presses START (or A) to drop, B to go back to the title |
+| Briefing | The loading screen for the mission: a generated operation name and planet, the objective (picked at random) and the steps after it, the reinforcements and score multiplier, the squad and a tip. Player 1 picks the **level** with left/right (remembered; a new save starts on RECON). Controllers 2-4 press START to join (B to leave again); player 1 presses START (or A) to drop, B to go back to the title |
 | Mission | The game. START pauses (see Controls) |
 | Results | After the dropship leaves (or the squad is lost): the mission's numbers, each player's row, and the score |
 | Initials | For a score that makes the table: up/down picks a letter, A or right moves on, B or left goes back, START (or A on the last letter) saves it |
-| High scores | The ten best missions: initials, score, waves, squad size and `EVAC` if the dropship got away. After a mission, START goes to the next briefing with the same squad, B to the title |
+| High scores | The ten best missions: initials, score, level, objective, waves, squad size, and `*` if the dropship got away. After a mission, START goes to the next briefing with the same squad, B to the title |
 
 Music: the title track plays from the title to the briefing, the mission
 track from the drop, a faster one for the extraction hold, then a victory or
@@ -158,6 +168,17 @@ dropship is down, or on the results screen, a new player starts with the
 next mission. Unplugging a controller for a second takes that player out (a
 bot carries on with their trooper if bots are on). Everyone who is playing
 stays in for the next mission.
+
+**Bots** (Options, or the debug menu) play the ports 2-4 nobody has joined:
+they follow player 1 and shoot the nearest bug (a bulwark's armored front
+last), dive away from a blow being wound up, back away from bugs that get
+close (sliding along the edge rather than into a corner), call Reinforce for
+dead teammates, drop a sentry into a swarm, call a resupply when nearly out
+of ammo and walk to it, shoot nests and enter the terminal's code, keep
+whatever they call down clear of the squad, step out from under incoming
+drops and strikes, and board the dropship. They get scheme B's aim assist.
+On the title screen's demo a bot leads: it works through the objective and
+calls Extraction itself.
 
 Each port has a colour: **P1 yellow, P2 blue, P3 green, P4 pink**: the
 trooper's shoulder pads, chest stripe and pack, their aim dots, their HUD
@@ -201,15 +222,15 @@ value, B closes:
 |---|---|
 | Waves | Wave spawner on/off |
 | Spawn N mixed bugs | Spawns 10, 25, 50 or 100 (D-Left/Right) of the wave mix around the camera |
-| Bots on free ports | Bots play ports 2-4 that nobody has joined: they fight, follow P1, call Reinforce for dead teammates and board the dropship (they get scheme B's aim assist) |
+| Bots on free ports | Bots play ports 2-4 that nobody has joined (see Players) |
 | Force max zoom | Camera fully zoomed out, the worst case for drawing |
 | God mode / Infinite ammo / Refill ammo / Kill all bugs | What they say |
 | No calldown cooldowns | Throw calldowns back to back |
 | Kill P1 (test reinforce) | Kills player 1 even in god mode, and closes the menu |
 | Enemy cap | Live bug limit, in steps of 8 |
 | Flow budget | Flow-field cells expanded per tick (256-4096) |
-| Quick mission | Zone capture and the extraction hold take 1/5 of the time (6 s and 15 s) |
-| Complete the objective | Marks both zones held, so Extraction can be called; closes the menu |
+| Quick mission | Zone capture, upload stages and the extraction hold take 1/5 of the time (6 s, 4 s and 15 s); nests that come after it have 1/5 of their health |
+| Complete the objective | Holds every zone, destroys every nest or uploads every stage, so Extraction can be called; closes the menu |
 | Run stress bench | The bench below (72 s); closes the menu |
 | Stats overlay | Same as L + D-Up |
 
@@ -232,7 +253,7 @@ which blinks faster as it gets close and shows the seconds left.
 | Airstrike | `> ^ > v` | 45 s | 3 s | 5 bombs in a line along your throw |
 | Orbital Barrage | `> v v < ^ >` | 90 s | 5 s | 15 shells at random within 8 m over 6 s (the area is ringed in red) |
 | Sentry | `^ < v > ^` | 90 s | 4 s | Turret: shoots the nearest bug in 16 m, 200 rounds or 45 s |
-| Extraction | `> > ^ v` | 10 s | 2 s | Calls the dropship (see below). Only once both zones are held, from inside the landing zone |
+| Extraction | `> > ^ v` | 10 s | 2 s | Calls the dropship (see below). Only once the objective is done, from inside the landing zone |
 
 Cooldowns are per player and survive death. All of it is in
 `src/sim/calldown.c` (codes and timings) and `src/sim/tuning.h`.
@@ -243,8 +264,8 @@ in its line of fire, and anything dropped from orbit crushes what it lands
 on, teammates included. Bots hold fire when a teammate is in their line.
 
 **Death and reinforcements**: a dead player stays down until a teammate's
-Reinforce lands. The squad shares 5 reinforcements per mission (`REINF` at
-the top left). If the whole squad is down, an emergency reinforce lands
+Reinforce lands. The squad shares a pool of reinforcements per mission (5
+at STANDARD, see Difficulty; `REINF` at the top left). If the whole squad is down, an emergency reinforce lands
 after 5 s, using the pool. With the pool empty the squad is lost, and 5 s
 later the mission fails.
 
@@ -252,13 +273,29 @@ later the mission fails.
 
 1. **Drop-in.** Each trooper rides a pod down (2 s, immune while riding);
    whatever is under a pod when it lands is crushed. Waves start after it.
-2. **Objective: hold the zones.** Two zones, **A** (amber) and **B** (cyan),
-   15-22 m from the drop point, ringed on the ground and marked by a light
-   column. When one is off screen a chevron at the edge of the view points to
-   it. A zone fills while at least one living trooper stands in it and no bug
-   is inside it (30 s in all). Progress pauses, never drains, when bugs get
-   in. The top line shows `HOLD THE ZONES   A 40%   B HELD`.
-3. **Extraction.** With both zones held, the landing zone (white ring and
+2. **The objective**, one of the three below. Its sites sit 15-22 m from the
+   drop point, each marked by a light column, and when one is off screen a
+   chevron at the edge of the view points to it.
+   - **Hold the zones.** Two zones, **A** (amber) and **B** (cyan), three at
+     SEVERE and up (**C**, violet), ringed on the ground. A zone fills while
+     at least one living trooper stands in it and no bug is inside it (30 s
+     in all). Progress pauses, never drains, when bugs get in. The top line
+     shows `HOLD THE ZONES   A 40%   B HELD`.
+   - **Destroy the nests.** Three nests (four from HAZARD up): chitin mounds
+     with a health bar over each. A nest wakes when a trooper comes within
+     18 m, or when it is hurt from anywhere, and then sends out a group of
+     bugs every 7 s (bigger groups on harder levels) until it is destroyed.
+     Bullets do half damage to a nest, explosions (airstrikes, barrages,
+     anything dropped on it) their full damage; nests are solid and stop
+     bullets. The top line shows `DESTROY THE NESTS   1/3`.
+   - **Upload the data.** A terminal with a ring around it. Stand in the ring,
+     hold **R** and enter the terminal's code (six inputs, shown over the
+     terminal and in your calldown panel in place of Extraction), then
+     release R. The stage uploads for 20 s while anyone is in the ring
+     (`STAY IN THE RING` when nobody is: it pauses, never drains), and waves
+     come twice as fast meanwhile. Each stage has a new code; three stages
+     (two at RECON, four from SEVERE up).
+3. **Extraction.** With the objective done, the landing zone (white ring and
    marker) lights up. Anyone standing in it can call **Extraction**
    (`> > ^ v`).
 4. **Hold out.** 75 s until the dropship lands (`DROPSHIP IN 1:02`); waves
@@ -274,32 +311,55 @@ type and how many troopers were extracted, then a row per player in their
 colour: kills (killing blows, including their sentry's and their strikes'),
 deaths, accuracy (their bullets that hit a bug), friendly hits (their bullets
 that hit a teammate), calldowns thrown, and how it ended (`aboard`, `down`,
-`left` behind alive, or `gone` from the game). **START** begins a new mission
-and the mission's **score** with its breakdown. **START** goes on to the
-initials (for a new high score) or the high score table. The same numbers go
-to the USB log once per mission:
+`left` behind alive, or `gone` from the game), the objective's parts done and
+the level, and the mission's **score** with its breakdown. Accuracy counts
+bullets that hit a bug or a nest. **START** goes on to the initials (for a new
+high score) or the high score table. The same numbers go to the USB log once
+per mission:
 
 ```
-RESULT build=6c2d5aaa outcome=success time=105s waves=7 kills=101/50/3 shots=728 hits=553 calldowns=8 deaths=2 reinforced=2 friendly_hits=96 extracted=4/4 score=8450 p1=76/1/235/186/36/6/aboard p2=16/0/173/91/60/1/aboard ai3=31/1/167/143/0/0/aboard ai4=31/0/153/133/0/1/aboard
+RESULT build=6c2d5aaa outcome=success objective=nests:3/3 difficulty=2 time=105s waves=7 kills=101/50/3 shots=728 hits=553 calldowns=8 deaths=2 reinforced=2 friendly_hits=96 extracted=4/4 score=8450 p1=76/1/235/186/36/6/aboard p2=16/0/173/91/60/1/aboard ai3=31/1/167/143/0/0/aboard ai4=31/0/153/133/0/1/aboard
 ```
 
-(`kills=` is skitters/gnashers/bulwarks; `shots`, `hits`, `calldowns`,
-`deaths` and `friendly_hits` are the squad's totals. `score=` is followed by
-` assisted` when debug aids were used. Then one field per player, `pN=` for
-a person and `aiN=` for a bot:
-kills/deaths/shots/hits/friendly_hits/calldowns/outcome.)
+(`objective=` is zones, nests or upload, then the parts done of how many;
+`difficulty=` is the level, 1 for RECON to 5 for HIVEBREAKER. `kills=` is
+skitters/gnashers/bulwarks; `shots`, `hits`, `calldowns`, `deaths` and
+`friendly_hits` are the squad's totals. `score=` is followed by ` assisted`
+when debug aids were used. Then one field per player, `pN=` for a person and
+`aiN=` for a bot: kills/deaths/shots/hits/friendly_hits/calldowns/outcome.)
+
+## Difficulty
+
+Picked on the briefing with left/right. STANDARD is the tuning in
+`src/sim/tuning.h`; the table is `difficulty_defs` in `src/sim/difficulty.c`.
+The enemy cap stays the same at every level (it is what the hardware can
+draw), so harder levels mean tougher mixes, faster waves and harder hits
+rather than more bugs at once.
+
+| Level | Wave size | Waves start at | Wave pace | Bug damage | Reinforcements | Zones / nests / stages | Nest group | Score |
+|---|---|---|---|---|---|---|---|---|
+| RECON | 70% | wave 1 | 130% (slower) | 70% | 7 | 2 / 3 / 2 | 2 | x0.75 |
+| STANDARD | 100% | wave 1 | 100% | 100% | 5 | 2 / 3 / 3 | 3 | x1.00 |
+| HAZARD | 120% | wave 2 | 90% | 115% | 5 | 2 / 4 / 3 | 3 | x1.30 |
+| SEVERE | 140% | wave 3 | 80% | 130% | 4 | 3 / 4 / 4 | 4 | x1.70 |
+| HIVEBREAKER | 170% | wave 4 | 70% | 150% | 3 | 3 / 4 / 4 | 5 | x2.20 |
+
+Waves also scale with the squad (bots count): 70% of the wave for one
+trooper, 85% for two, 100% for three and 115% for four. From HAZARD up a
+nest's group sometimes includes a bulwark.
 
 ## Scoring
 
 | | Points |
 |---|---|
 | Skitter / gnasher / bulwark killed | 10 / 25 / 60 |
-| Zone held | 500 each |
+| Zone held / nest destroyed / stage uploaded | 500 / 400 / 400 each |
 | Extracted (the dropship got away) | 2000, plus 500 per trooper aboard |
 | Time bonus (successful missions only) | 5 per second under 10 minutes |
 | Reinforcement used | -250 each |
 
-A failed mission keeps its kills and zones. The constants are `SCORE_*` in
+The sum is multiplied by the level's score multiplier. A failed mission
+keeps its kills and objective points. The constants are `SCORE_*` in
 `src/sim/tuning.h`; the sum is `mission_score()` in `src/sim/mission.c`.
 The table keeps the ten best (a new score goes below equal ones). A mission
 where god mode, infinite ammo, no calldown cooldowns, quick mission or
@@ -390,7 +450,9 @@ briefing may allocate; each mission starts a new baseline.)
 
 ## Stress bench (M2 go/no-go)
 
-Run `hivebreakers-bench.z64` (or *Run stress bench* in the debug menu). It
+Run `hivebreakers-bench.z64` (or *Run stress bench* in the debug menu). The
+bench ROM always plays a zones mission at STANDARD, whatever the save says,
+so its numbers compare between builds. It
 turns on bots for the ports nobody plays (so four troopers and four HUD
 panels, the worst case), god mode, infinite ammo and max zoom, switches
 waves off, then holds the live bug count at 16, 32, 48, 64, 80, 96, 112, 128,
@@ -423,7 +485,7 @@ src/sim/        pure-C simulation core: no libdragon includes, builds on the hos
                 grid (spatial hash), flow (flow field), waves, bot,
                 calldown (codes, beacons, strikes, turrets, pickups,
                 reinforcements, explosions), mission (drop-in, zones,
-                extraction, boarding, stats, score), tuning.h,
+                extraction, boarding, stats, score), difficulty, tuning.h,
                 hiscore (the high score table)
 src/n64/        thin N64 layer: boot checks, input (joining and leaving),
                 main (the screen flow), frontend (the screens), ui (2D

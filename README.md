@@ -9,7 +9,14 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M7**: three kinds of mission and five difficulty
+**Status: milestone M8**: a campaign. **Deploy** opens the sector map:
+six planets held by the swarm, from Kavel Prime to the Gnash Hive. Every
+successful mission raises its planet's liberation (more on harder levels),
+a liberated planet opens the ones beyond it, and liberating the hive world
+wins the sector. Progress is saved in the EEPROM. Planets are dust, ash or
+ice worlds, each with its own ground, rocks, light and briefing planet.
+
+M7 added three kinds of mission and five difficulty
 levels. Each mission is one of **hold the zones**, **destroy the nests**
 (bug nests that send out the swarm until they are blown apart) or **upload
 the data** (enter the terminal's code, then hold its ring while each stage
@@ -104,7 +111,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
-| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that goes through the splash, title, menu and briefing (stepping the level to STANDARD), then moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, enters initials for the high score, checks they reached the save, then plays a nests mission and an upload mission with bots on every port, and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that goes through the splash, title, menu, sector map and briefing (stepping the level to STANDARD), then moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, enters initials for the high score, checks they reached the save, then plays a nests mission and an upload mission with bots on every port, checks the first planet's liberation (75% after three STANDARD successes), and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make BENCH=1` | `hivebreakers-bench.z64`: runs the stress bench by itself 2 s after boot (see below) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
@@ -146,12 +153,13 @@ title says `NO EEPROM: SCORES WON'T BE KEPT` and the game runs on defaults.
 | Splash | Credits card, 3 s (A, B or START skips) |
 | Title | The logo over the attract demo: bots playing a real mission in the background. Shows the top score. Left alone for 30 s it shows the high score table for 10 s, then comes back; the demo starts a new mission when the last one ends, or every 2 minutes |
 | Menu | **Deploy**, **High scores**, **Options**, **Credits**. Stick or D-pad, A selects, B goes back |
-| Options | Music and sound volume (0-10, left/right), bots fill empty slots (on/off), erase high scores (hold A for 1.5 s), back. Saved to the EEPROM when you leave |
-| Briefing | The loading screen for the mission: a generated operation name and planet, the objective (picked at random) and the steps after it, the reinforcements and score multiplier, the squad and a tip. Player 1 picks the **level** with left/right (remembered; a new save starts on RECON). Controllers 2-4 press START to join (B to leave again); player 1 presses START (or A) to drop, B to go back to the title |
+| Sector map | The campaign (see Campaign): the planets, the supply lines between them, each one's liberation. Left/right steps through the open planets, A deploys to the selected one, B goes back |
+| Options | Music and sound volume (0-10, left/right), bots fill empty slots (on/off), erase high scores (hold A for 1.5 s), reset the campaign (hold A), back. Saved to the EEPROM when you leave |
+| Briefing | The loading screen for the mission: a generated operation name, the planet, the objective (picked at random from what the planet allows) and the steps after it, the reinforcements and score multiplier, the squad and a tip. Player 1 picks the **level** with left/right (remembered; a new save starts on RECON). Controllers 2-4 press START to join (B to leave again); player 1 presses START (or A) to drop, B to go back to the title |
 | Mission | The game. START pauses (see Controls) |
-| Results | After the dropship leaves (or the squad is lost): the mission's numbers, each player's row, and the score |
+| Results | After the dropship leaves (or the squad is lost): the mission's numbers, the planet's liberation, each player's row, and the score |
 | Initials | For a score that makes the table: up/down picks a letter, A or right moves on, B or left goes back, START (or A on the last letter) saves it |
-| High scores | The ten best missions: initials, score, level, objective, waves, squad size, and `*` if the dropship got away. After a mission, START goes to the next briefing with the same squad, B to the title |
+| High scores | The ten best missions: initials, score, level, objective, waves, squad size, and `*` if the dropship got away. After a mission, START goes back to the sector map with the same squad, B to the title |
 
 Music: the title track plays from the title to the briefing, the mission
 track from the drop, a faster one for the extraction hold, then a victory or
@@ -328,6 +336,38 @@ skitters/gnashers/bulwarks; `shots`, `hits`, `calldowns`, `deaths` and
 when debug aids were used. Then one field per player, `pN=` for a person and
 `aiN=` for a bot: kills/deaths/shots/hits/friendly_hits/calldowns/outcome.)
 
+## Campaign
+
+The sector map's planets, left to right. A planet opens once a planet it is
+linked from is liberated; the first is always open.
+
+| Planet | World | Threat | Opens after | Missions |
+|---|---|---|---|---|
+| Kavel Prime | dust | RECON | (start) | any |
+| Orbre IV | ash | STANDARD | Kavel Prime | any |
+| Thessa Minor | ice | STANDARD | Kavel Prime | any |
+| Mardor VII | dust | HAZARD | Orbre IV or Thessa Minor | any |
+| Quenex | ice | SEVERE | Mardor VII | any |
+| The Gnash Hive | ash | HIVEBREAKER | Quenex | destroy the nests only |
+
+Threat is the level a planet is meant for; any level can be played anywhere.
+A successful mission adds 20% liberation at RECON, plus 5% per level above
+it (40% at HIVEBREAKER); a failed one that finished its objective adds 5%.
+At 100% the planet is liberated (missions there still count for the high
+score table, not for liberation). Missions where debug aids were used don't
+count, like the high scores. The results screen shows what the mission did
+for its planet, and the USB log gets a line after the `RESULT` one:
+
+```
+CAMPAIGN planet=1 gain=25 now=75 liberated sector-liberated
+```
+
+(`liberated` when this mission finished the planet, `sector-liberated` when
+that was the last one.) The planets, links and gains are in
+`src/sim/campaign.c`. A world's look is visual only: the ground and rock
+models for each biome come from `tools/genmodels.py`, the briefing's planet
+from `tools/genart.py`, and the light from `render.c`.
+
 ## Difficulty
 
 Picked on the briefing with left/right. STANDARD is the tuning in
@@ -485,7 +525,8 @@ src/sim/        pure-C simulation core: no libdragon includes, builds on the hos
                 grid (spatial hash), flow (flow field), waves, bot,
                 calldown (codes, beacons, strikes, turrets, pickups,
                 reinforcements, explosions), mission (drop-in, zones,
-                extraction, boarding, stats, score), difficulty, tuning.h,
+                extraction, boarding, stats, score), difficulty, campaign,
+                tuning.h,
                 hiscore (the high score table)
 src/n64/        thin N64 layer: boot checks, input (joining and leaving),
                 main (the screen flow), frontend (the screens), ui (2D

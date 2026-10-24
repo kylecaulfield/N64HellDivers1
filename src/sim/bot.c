@@ -324,7 +324,7 @@ player_intent_t bot_intent(const sim_t *s, int idx)
     vec2 to_spot = v2_sub(spot, me->pos);
 
     // Nothing to shoot at: a nest in range will do.
-    int nest = target < 0 ? nest_in_range(s, me->pos, BOT_ENGAGE_RANGE) : -1;
+    int nest = target < 0 ? nest_in_range(s, me->pos, BOT_NEST_RANGE) : -1;
     if (nest >= 0 && !throwing) {
         vec2 c = s->arena.sites[nest];
         out.aim = v2_norm_or(v2_sub(c, me->pos), me->facing);

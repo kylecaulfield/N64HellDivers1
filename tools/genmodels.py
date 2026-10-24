@@ -617,20 +617,37 @@ def rock(seed, base_color, size):
     return out
 
 
-def arena_floor():
+# Each biome (biome_t in src/sim/sim.h) recolours the ground and the rocks:
+# base, three patch colours, tufts, pebbles; then the three rocks.
+BIOMES = {
+    "dust":  dict(ground=GROUND, patches=(SOIL_DARK, SAND, RUST), tuft=TUFT, pebble=PEBBLE,
+                  rocks=(ROCK_A, ROCK_B, ROCK_C)),
+    "ash":   dict(ground=(70, 62, 60), patches=((44, 40, 40), (96, 80, 72), (110, 52, 40)),
+                  tuft=(150, 70, 40), pebble=(60, 56, 56),
+                  rocks=((78, 70, 70), (60, 54, 56), (98, 88, 84))),
+    "frost": dict(ground=(176, 186, 196), patches=((140, 152, 168), (214, 222, 230), (120, 140, 160)),
+                  tuft=(96, 120, 110), pebble=(130, 136, 146),
+                  rocks=((120, 128, 140), (96, 104, 118), (150, 158, 170))),
+}
+
+
+def arena_floor(biome="dust"):
     """The whole 64x64 m arena floor: a 4 m grid of shared vertices with
-    smooth colour variation (darker soil, sand and rusty patches) so movement
-    reads on screen, a darker outer ring marking the edge, and scattered
-    grass tufts and pebbles. Matches ARENA_HALF_SIZE in src/sim/tuning.h."""
+    smooth colour variation (darker soil, sand and rusty patches on dust)
+    so movement reads on screen, a darker outer ring marking the edge, and
+    scattered tufts and pebbles. Matches ARENA_HALF_SIZE in src/sim/tuning.h.
+    The same layout for every biome, in its colours."""
+    pal = BIOMES[biome]
     rnd = random.Random(99)
     half, tile = 32.0, 4.0
     n = int(2 * half / tile)
     # Patch "noise": a few soft blobs of each colour.
+    p0, p1, p2 = pal["patches"]
     blobs = [(rnd.uniform(-half, half), rnd.uniform(-half, half), rnd.uniform(5, 11), c)
-             for c in [SOIL_DARK] * 7 + [SAND] * 6 + [RUST] * 4]
+             for c in [p0] * 7 + [p1] * 6 + [p2] * 4]
 
     def colour(x, z):
-        c = list(GROUND)
+        c = list(pal["ground"])
         for bx, bz, r, bc in blobs:
             w = max(0.0, 1.0 - math.hypot(x - bx, z - bz) / r) ** 2
             c = [a + (b - a) * w for a, b in zip(c, bc)]
@@ -659,14 +676,15 @@ def arena_floor():
         a = rnd.uniform(0, math.pi)
         dx, dz = math.cos(a) * 0.18, math.sin(a) * 0.18
         h = rnd.uniform(0.18, 0.32)
-        tris.append((((x - dx, 0.0, z - dz), (x + dx, 0.0, z + dz), (x, h, z)), TUFT))
-        tris.append((((x + dx, 0.0, z + dz), (x - dx, 0.0, z - dz), (x + dz * 0.5, h * 0.8, z - dx * 0.5)), TUFT))
+        tris.append((((x - dx, 0.0, z - dz), (x + dx, 0.0, z + dz), (x, h, z)), pal["tuft"]))
+        tris.append((((x + dx, 0.0, z + dz), (x - dx, 0.0, z - dz), (x + dz * 0.5, h * 0.8, z - dx * 0.5)),
+                     pal["tuft"]))
     for _ in range(50):
         x, z = rnd.uniform(-half + 5, half - 5), rnd.uniform(-half + 5, half - 5)
         r = rnd.uniform(0.12, 0.25)
         top = (x, r * 0.8, z)
         base = [(x + math.sin(k * 2.1) * r, 0.0, z + math.cos(k * 2.1) * r) for k in range(3)]
-        shade = tuple(int(v * rnd.uniform(0.85, 1.1)) for v in PEBBLE)
+        shade = tuple(min(255, int(v * rnd.uniform(0.85, 1.1))) for v in pal["pebble"])
         for k in range(3):
             tris.append(((base[k], base[(k + 1) % 3], top), shade))
     return tris
@@ -687,6 +705,14 @@ MODELS = {
     "rock_b": lambda: rock(23, ROCK_B, 2.4),
     "rock_c": lambda: rock(37, ROCK_C, 1.0),
     "ground": arena_floor,
+    "ground_ash": lambda: arena_floor("ash"),
+    "ground_frost": lambda: arena_floor("frost"),
+    "rock_a_ash": lambda: rock(11, BIOMES["ash"]["rocks"][0], 1.6),
+    "rock_b_ash": lambda: rock(23, BIOMES["ash"]["rocks"][1], 2.4),
+    "rock_c_ash": lambda: rock(37, BIOMES["ash"]["rocks"][2], 1.0),
+    "rock_a_frost": lambda: rock(11, BIOMES["frost"]["rocks"][0], 1.6),
+    "rock_b_frost": lambda: rock(23, BIOMES["frost"]["rocks"][1], 2.4),
+    "rock_c_frost": lambda: rock(37, BIOMES["frost"]["rocks"][2], 1.0),
     "shadow": shadow,
     "nest": nest,
     "nest_dead": nest_dead,

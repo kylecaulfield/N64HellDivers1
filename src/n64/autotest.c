@@ -103,10 +103,13 @@ static void final_verdict(void)
     verdict = true;
     bool m7 = first_difficulty == DIFFICULTY_STANDARD && success_mask == (1u << OBJ_COUNT) - 1 &&
               nests_destroyed >= 3 && uploads_started >= 3 && stages_done >= 3;
+    // Three STANDARD successes on the first planet: 25% each.
+    unsigned liberation = save_campaign()->liberation[0];
+    bool m8 = (fe_seen & (1u << SCREEN_SECTOR)) && liberation == 75;
     debugf("AUTOTEST %s: %s | objectives: success mask %x, nests destroyed %lu, uploads %lu, stages %lu, "
-           "first mission level %u\n",
-           part1_ok && m7 ? "PASS" : "FAIL", part1, success_mask, (unsigned long)nests_destroyed,
-           (unsigned long)uploads_started, (unsigned long)stages_done, first_difficulty);
+           "first mission level %u | campaign: planet 1 at %u%%\n",
+           part1_ok && m7 && m8 ? "PASS" : "FAIL", part1, success_mask, (unsigned long)nests_destroyed,
+           (unsigned long)uploads_started, (unsigned long)stages_done, first_difficulty, liberation);
 }
 
 static int nearest_enemy(const sim_t *sim, vec2 from)
@@ -212,7 +215,7 @@ void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf,
     fe_seen |= (uint16_t)(1u << screen);
     static int last_screen = -1;
     static const char *const NAMES[] = {
-        "splash", "title", "menu", "options", "credits", "high scores", "briefing", "mission", "initials",
+        "splash", "title", "menu", "options", "credits", "high scores", "briefing", "mission", "initials", "sector",
     };
     if ((int)screen != last_screen) {
         debugf("AUTOTEST front end: %s\n", NAMES[screen]);
@@ -231,6 +234,10 @@ void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf,
     case SCREEN_MENU:
         if (sf == 20)
             p->pressed = SIM_BTN_A; // DEPLOY
+        break;
+    case SCREEN_SECTOR:
+        if (sf == 20 && !verdict)
+            p->pressed = SIM_BTN_A; // the first planet, the only one open on a fresh save
         break;
     case SCREEN_BRIEFING:
         // A fresh save starts on the easiest level: step it to STANDARD

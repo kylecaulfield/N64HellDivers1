@@ -16,6 +16,7 @@
 #include "autotest.h"
 #include "bench.h"
 #include "boot.h"
+#include "campaign.h"
 #include "difficulty.h"
 #include "frontend.h"
 #include "fx.h"
@@ -73,6 +74,9 @@ static int score_rank;               // where this mission's score lands, -1 if 
 static bool score_eligible;
 static char initials[3] = { 'A', 'A', 'A' };
 static int initials_pos;
+static int planet;                   // the mission's planet (campaign.h)
+static uint8_t squad_next;           // who goes to the briefing from the sector map
+static results_campaign_t liberation; // what the mission did for its planet
 static uint32_t frames;              // since boot
 
 static void on_vblank(void *arg)
@@ -175,11 +179,12 @@ static void apply_settings(void)
     sound_set_volumes(st->music, st->sfx);
 }
 
-// A new attract demo: a random objective at the standard level.
+// A new attract demo: a random objective and biome at the standard level.
 static void new_demo(void)
 {
     uint32_t seed = new_seed();
     sim.settings.objective = (uint8_t)((seed >> 5) % OBJ_COUNT);
+    sim.settings.biome = (uint8_t)((seed >> 9) % BIOME_COUNT);
     sim.settings.difficulty = DIFFICULTY_STANDARD;
     sim_demo(&sim, seed);
     world_changed();
@@ -195,15 +200,18 @@ static void to_title(void)
     enter(SCREEN_TITLE);
 }
 
-// The briefing generates the mission (the loading screen): the squad is
-// whoever is in `humans`; more can join until the drop.
+// The briefing generates the mission (the loading screen) on the planet
+// picked on the sector map: the squad is whoever is in `humans`; more can
+// join until the drop.
 static void to_briefing(uint8_t humans)
 {
     overlay_clear_heap_baseline();
     mission_seed = new_seed();
     briefing_make(&brief, mission_seed);
+    snprintf(brief.planet, sizeof(brief.planet), "%s", planet_defs[planet].name);
     apply_settings();
-    sim.settings.objective = (uint8_t)((mission_seed >> 7) % OBJ_COUNT);
+    sim.settings.biome = planet_defs[planet].biome;
+    sim.settings.objective = (uint8_t)campaign_objective(planet, mission_seed >> 7);
 #ifdef AUTOTEST
     sim.settings.objective = (uint8_t)autotest_objective();
 #endif
@@ -212,6 +220,16 @@ static void to_briefing(uint8_t humans)
     world_changed();
     sound_music(MUSIC_TITLE);
     enter(SCREEN_BRIEFING);
+}
+
+// The sector map, on the last planet picked if it is still open.
+static void to_sector(uint8_t humans)
+{
+    squad_next = humans;
+    enter(SCREEN_SECTOR);
+    cursor = save_settings()->planet;
+    if (!campaign_open(save_campaign(), cursor))
+        cursor = 0;
 }
 
 static void to_mission(void)
@@ -327,7 +345,7 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
         } else if (n.accept) {
             sound_ui(UI_SELECT);
             switch (cursor) {
-            case MENU_DEPLOY:  to_briefing((uint8_t)(1u | (n.port > 0 ? 1u << n.port : 0))); break;
+            case MENU_DEPLOY:  to_sector((uint8_t)(1u | (n.port > 0 ? 1u << n.port : 0))); break;
             case MENU_SCORES:  to_scores(-1, false, false); break;
             case MENU_OPTIONS: enter(SCREEN_OPTIONS); break;
             case MENU_CREDITS: enter(SCREEN_CREDITS); break;
@@ -354,11 +372,14 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
         bool hold_a = false;
         for (int p = 0; p < SIM_MAX_PLAYERS; p++)
             hold_a |= (connected & (1u << p)) && (in->ports[p].held & SIM_BTN_A);
-        erase_hold = cursor == OPT_ERASE && hold_a ? erase_hold + 1 : 0;
+        erase_hold = (cursor == OPT_ERASE || cursor == OPT_RESET) && hold_a ? erase_hold + 1 : 0;
         if (erase_hold == ERASE_HOLD) {
-            save_erase_scores();
+            if (cursor == OPT_ERASE)
+                save_erase_scores();
+            else
+                save_reset_campaign();
             sound_ui(UI_SELECT);
-            debugf("high scores erased\n");
+            debugf(cursor == OPT_ERASE ? "high scores erased\n" : "campaign reset\n");
         }
         if (n.back || (n.accept && cursor == OPT_BACK)) {
             save_write_settings();
@@ -382,7 +403,7 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
         } else if (after_mission) {
             if (n.start) {
                 sound_ui(UI_SELECT);
-                to_briefing(sim.humans);
+                to_sector(sim.humans);
             } else if (n.back) {
                 sound_ui(UI_BACK);
                 to_title();
@@ -430,6 +451,28 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
             to_title();
         }
         break;
+    case SCREEN_SECTOR: {
+        // Left/right (or up/down) step through the open planets.
+        int step = n.right || n.down ? 1 : n.left || n.up ? -1 : 0;
+        for (int k = 1; step && k < PLANET_COUNT; k++) {
+            int next = (cursor + step * k + PLANET_COUNT) % PLANET_COUNT;
+            if (campaign_open(save_campaign(), next)) {
+                cursor = next;
+                sound_ui(UI_MOVE);
+                break;
+            }
+        }
+        if (n.accept && screen_frames > 10) {
+            sound_ui(UI_SELECT);
+            planet = cursor;
+            st->planet = (uint8_t)cursor;
+            to_briefing(squad_next);
+        } else if (n.back) {
+            sound_ui(UI_BACK);
+            enter(SCREEN_MENU);
+        }
+        break;
+    }
     case SCREEN_INITIALS: {
         char *c = &initials[initials_pos];
         static const char ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
@@ -475,7 +518,7 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
 
 static bool world_visible(void)
 {
-    return screen != SCREEN_SPLASH && screen != SCREEN_BRIEFING;
+    return screen != SCREEN_SPLASH && screen != SCREEN_BRIEFING && screen != SCREEN_SECTOR;
 }
 
 static void draw_2d(uint8_t connected)
@@ -494,14 +537,17 @@ static void draw_2d(uint8_t connected)
     case SCREEN_MISSION:
         hud_draw(&sim, paused && !menu_is_open(), connected, paused ? quit_hold * 100 / QUIT_HOLD_FRAMES : 0);
         if (was_over && over_frames >= RESULTS_DELAY)
-            results_draw(&sim, &score, score_eligible ? score_rank : -2);
+            results_draw(&sim, &score, score_eligible ? score_rank : -2, &liberation);
         break;
     case SCREEN_INITIALS:
         frontend_initials(initials, initials_pos, (uint32_t)score.total, score_rank, screen_frames);
         break;
+    case SCREEN_SECTOR:
+        frontend_sector(save_campaign(), cursor, screen_frames);
+        break;
     }
     // Fade in on a new screen (not between the title and its menus).
-    if (screen == SCREEN_SPLASH || screen == SCREEN_BRIEFING || screen == SCREEN_MISSION)
+    if (screen == SCREEN_SPLASH || screen == SCREEN_BRIEFING || screen == SCREEN_MISSION || screen == SCREEN_SECTOR)
         if (screen_frames < FADE_FRAMES)
             ui_fade(1.0f - (float)screen_frames / FADE_FRAMES);
 }
@@ -624,6 +670,19 @@ int main(void)
                 score_eligible = !sim.mission.assisted;
 #endif
                 results_log(&sim, &score);
+                // The planet's liberation, for missions that count.
+                int parts, done = mission_parts(&sim, &parts);
+                liberation = (results_campaign_t){ .planet = planet_defs[planet].name, .counted = score_eligible };
+                if (score_eligible) {
+                    liberation.gain = campaign_record(save_campaign(), planet, sim.mission.difficulty,
+                                                      sim.mission.phase == MISSION_SUCCESS, done == parts,
+                                                      &liberation.liberated);
+                    liberation.complete = liberation.liberated && campaign_complete(save_campaign());
+                    save_write_campaign();
+                }
+                liberation.now = save_campaign()->liberation[planet];
+                debugf("CAMPAIGN planet=%d gain=%d now=%d%s%s\n", planet + 1, liberation.gain, liberation.now,
+                       liberation.liberated ? " liberated" : "", liberation.complete ? " sector-liberated" : "");
                 over_frames = 0;
             }
             over_frames++;

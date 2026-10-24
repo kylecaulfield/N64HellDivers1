@@ -1,11 +1,12 @@
 #include "ui.h"
 
 #include <libdragon.h>
+#include <math.h>
 
 #include "overlay.h"
 #include "palette.h"
 
-static sprite_t *logo, *planet;
+static sprite_t *logo, *planet[BIOME_COUNT];
 
 void ui_init(void)
 {
@@ -26,7 +27,9 @@ void ui_init(void)
     }
     rdpq_text_register_font(FONT_HEADING, font);
     logo = sprite_load("rom:/logo.sprite");
-    planet = sprite_load("rom:/planet.sprite");
+    planet[BIOME_DUST] = sprite_load("rom:/planet.sprite");
+    planet[BIOME_ASH] = sprite_load("rom:/planet_ash.sprite");
+    planet[BIOME_FROST] = sprite_load("rom:/planet_frost.sprite");
 }
 
 int ui_logo_width(void)
@@ -43,11 +46,11 @@ void ui_logo(float cx, float y, float scale)
     rdpq_sprite_blit(logo, cx - w * 0.5f, y, &(rdpq_blitparms_t){ .scale_x = scale, .scale_y = scale });
 }
 
-void ui_planet(int x, int y)
+void ui_planet(int x, int y, int biome)
 {
     rdpq_set_mode_standard();
     rdpq_mode_alphacompare(1);
-    rdpq_sprite_blit(planet, (float)x, (float)y, NULL);
+    rdpq_sprite_blit(planet[biome % BIOME_COUNT], (float)x, (float)y, NULL);
 }
 
 void ui_box(int x0, int y0, int x1, int y1)
@@ -107,6 +110,16 @@ void ui_stars(uint32_t frame)
                 continue;
             rdpq_fill_rectangle(sx[i], sy[i], sx[i] + 1, sy[i] + 1);
         }
+    }
+}
+
+void ui_disc(int cx, int cy, int r, const uint8_t rgb[3])
+{
+    // Horizontal spans, one per row (fill mode, cheap at these sizes).
+    rdpq_set_mode_fill(RGBA32(rgb[0], rgb[1], rgb[2], 0xFF));
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = (int)sqrtf((float)(r * r - dy * dy) + 0.5f);
+        rdpq_fill_rectangle(cx - dx, cy + dy, cx + dx + 1, cy + dy + 1);
     }
 }
 

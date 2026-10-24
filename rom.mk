@@ -38,7 +38,8 @@ OBJ := $(SRC:src/%.c=$(BUILD_DIR)/%.o)
 # Every model has a generated placeholder. A file in assets/models/<name>.glb
 # (e.g. a Blender/Fast64 export) replaces it with no other changes.
 MODELS := soldier skitter gnasher bulwark dropship beacon turret crate mgcase pod rock_a rock_b rock_c ground shadow \
-          nest nest_dead terminal
+          nest nest_dead terminal ground_ash ground_frost rock_a_ash rock_b_ash rock_c_ash \
+          rock_a_frost rock_b_frost rock_c_frost
 model_src = $(if $(wildcard assets/models/$(1).glb),assets/models/$(1).glb,$(GEN_DIR)/$(1).glb)
 MODEL_T3DM := $(MODELS:%=$(FS_DIR)/models/%.t3dm)
 
@@ -64,7 +65,8 @@ SFX   := rifle shotgun mg explosion impact bug_hit armor_hit bug_die player_hurt
          radio alarm
 MUSIC_XM64 := $(MUSIC:%=$(FS_DIR)/music/%.xm64)
 SFX_WAV64  := $(SFX:%=$(FS_DIR)/sfx/%.wav64)
-ART        := $(FS_DIR)/hive.font64 $(FS_DIR)/logo.sprite $(FS_DIR)/planet.sprite
+ART        := $(FS_DIR)/hive.font64 $(FS_DIR)/logo.sprite $(FS_DIR)/planet.sprite \
+              $(FS_DIR)/planet_ash.sprite $(FS_DIR)/planet_frost.sprite
 
 # Each generator writes all its files at once; the stamp stands for them.
 $(GEN_DIR)/audio.stamp: tools/genaudio.py

@@ -194,6 +194,7 @@
 #define BOT_FOLLOW_DIST      3.0f
 #define BOT_FF_CLEARANCE     0.6f    // a bot holds fire when a teammate is this close to its line
 #define BOT_NEST_STANDOFF    7.0f    // the leading bot shoots a nest from this far
+#define BOT_NEST_RANGE       12.0f   // bots shoot nests this close (on screen, not past its edge)
 #define BOT_CRATE_RANGE      20.0f   // nearly out of ammo: walk to a resupply crate this close, or call one
 #define BOT_WALL_MARGIN      1.5f    // backing off would end this close to the edge: slide sideways
 #define BOT_SENTRY_BUGS      8       // a bot drops a sentry when this many bugs are within...

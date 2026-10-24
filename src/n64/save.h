@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "campaign.h"
 #include "hiscore.h"
 #include "sim.h"
 
@@ -20,6 +21,8 @@ typedef struct {
     uint8_t scheme[SIM_MAX_PLAYERS];  // control scheme per port
     uint8_t version;
     uint8_t difficulty;               // the last one picked on the briefing
+    uint8_t planet;                   // the last one picked on the sector map
+    uint8_t reserved[22];             // room to grow without moving the files
 } settings_t;
 
 void save_init(void);
@@ -27,8 +30,12 @@ void save_init(void);
 bool save_available(void);
 settings_t *save_settings(void);
 hiscore_table_t *save_scores(void);
+campaign_t *save_campaign(void);
 void save_write_settings(void);
 void save_write_scores(void);
+void save_write_campaign(void);
+// Start the campaign over (and write it).
+void save_reset_campaign(void);
 // Reset the high score table to its defaults (and write it).
 void save_erase_scores(void);
 

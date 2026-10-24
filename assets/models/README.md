@@ -17,6 +17,7 @@ Makefile changes are needed.
 | `mgcase.glb` | Machine gun case |
 | `pod.glb` | Drop pod: the squad's drop-in at the start of a mission, and Reinforce (seen falling onto its beacon) |
 | `rock_a.glb`, `rock_b.glb`, `rock_c.glb` | Arena obstacles. Collision radii are 0.9, 1.35 and 0.55 m (`rock_radius` in `src/sim/arena.c`); keep a replacement about that size or update the table |
+| `ground_ash.glb`, `ground_frost.glb`, `rock_*_ash.glb`, `rock_*_frost.glb` | The ground and rocks of ash and ice worlds (same shapes and sizes, other colours) |
 | `ground.glb` | The whole 64x64 m arena floor, centred on the origin (the placeholder has grass tufts and pebbles: 842 triangles, drawn once per frame) |
 | `nest.glb` | Bug nest (OBJ_NESTS): solid out to 1.6 m (`NEST_RADIUS`), where bugs crawl out. Up to four on screen |
 | `nest_dead.glb` | What is left of a destroyed nest: walkable, flat |

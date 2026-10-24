@@ -31,13 +31,26 @@ enum {
     MDL_SOLDIER, MDL_SKITTER, MDL_GNASHER, MDL_BULWARK,
     MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND,
     MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_DROPSHIP, MDL_SHADOW,
-    MDL_NEST, MDL_NEST_DEAD, MDL_TERMINAL, MDL_COUNT
+    MDL_NEST, MDL_NEST_DEAD, MDL_TERMINAL,
+    // Biome variants of the ground and the rocks (biome_t order after dust).
+    MDL_GROUND_ASH, MDL_GROUND_FROST, MDL_ROCKS_ASH, MDL_ROCKS_FROST = MDL_ROCKS_ASH + ROCK_KIND_COUNT,
+    MDL_COUNT = MDL_ROCKS_FROST + ROCK_KIND_COUNT
 };
 
 static const char *const model_names[MDL_COUNT] = {
     "soldier", "skitter", "gnasher", "bulwark", "rock_a", "rock_b", "rock_c", "ground",
     "beacon", "turret", "crate", "mgcase", "pod", "dropship", "shadow",
-    "nest", "nest_dead", "terminal",
+    "nest", "nest_dead", "terminal", "ground_ash", "ground_frost",
+    "rock_a_ash", "rock_b_ash", "rock_c_ash", "rock_a_frost", "rock_b_frost", "rock_c_frost",
+};
+
+// Each biome's ground and rocks, and its light: clear colour, ambient, sun.
+static const uint8_t biome_ground[BIOME_COUNT] = { MDL_GROUND, MDL_GROUND_ASH, MDL_GROUND_FROST };
+static const uint8_t biome_rocks[BIOME_COUNT] = { MDL_ROCK_A, MDL_ROCKS_ASH, MDL_ROCKS_FROST };
+static const uint8_t biome_light[BIOME_COUNT][3][3] = {
+    [BIOME_DUST]  = { { 24, 22, 26 }, { 90, 88, 100 }, { 255, 240, 220 } },
+    [BIOME_ASH]   = { { 22, 14, 14 }, { 100, 76, 72 }, { 255, 205, 170 } },
+    [BIOME_FROST] = { { 18, 24, 32 }, { 92, 102, 124 }, { 225, 236, 255 } },
 };
 
 // What falls from orbit for each calldown (-1: nothing, it is a strike), and
@@ -732,11 +745,13 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     gpu_timing_submit_begin();
     t3d_frame_start();
     t3d_viewport_attach(&viewport);
-    t3d_screen_clear_color(RGBA32(24, 22, 26, 0xFF));
+    const uint8_t *clear = biome_light[sim->settings.biome % BIOME_COUNT][0];
+    t3d_screen_clear_color(RGBA32(clear[0], clear[1], clear[2], 0xFF));
     t3d_screen_clear_depth();
 
-    uint8_t ambient[4] = { 90, 88, 100, 0xFF };
-    uint8_t sun[4] = { 0xFF, 0xF0, 0xDC, 0xFF };
+    const uint8_t (*light)[3] = biome_light[sim->settings.biome % BIOME_COUNT];
+    uint8_t ambient[4] = { light[1][0], light[1][1], light[1][2], 0xFF };
+    uint8_t sun[4] = { light[2][0], light[2][1], light[2][2], 0xFF };
     T3DVec3 sun_dir = {{ -0.5f, 1.0f, 0.4f }};
     t3d_vec3_norm(&sun_dir);
     t3d_light_set_ambient(ambient);
@@ -745,13 +760,14 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
 
     t3d_matrix_push_pos(1);
     t3d_matrix_set(&static_mats[0], true);
-    rspq_block_run(blocks[MDL_GROUND]);
+    int biome = sim->settings.biome % BIOME_COUNT;
+    rspq_block_run(blocks[biome_ground[biome]]);
     for (int i = 0; i < sim->arena.obstacle_count; i++) {
         const obstacle_t *o = &sim->arena.obstacles[i];
         if (!in_rect(o->pos, vmin, vmax))
             continue;
         t3d_matrix_set(&static_mats[1 + i], true);
-        rspq_block_run(blocks[MDL_ROCK_A + o->kind]);
+        rspq_block_run(blocks[biome_rocks[biome] + o->kind]);
     }
     if (first_bug && soldier_material)
         rspq_block_run(soldier_material);

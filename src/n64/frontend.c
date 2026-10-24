@@ -106,6 +106,11 @@ void briefing_make(briefing_t *b, uint32_t seed)
 
 // --- Screens ----------------------------------------------------------------
 
+const uint8_t biome_rgb[BIOME_COUNT][3] = {
+    [BIOME_DUST] = { 214, 150, 84 }, [BIOME_ASH] = { 150, 96, 86 }, [BIOME_FROST] = { 184, 206, 236 },
+};
+static const char *const BIOME_NAME[BIOME_COUNT] = { "DUST WORLD", "ASH WORLD", "ICE WORLD" };
+
 void frontend_loading(float frac)
 {
     ui_logo(160.0f, 84.0f, 1.0f);
@@ -169,10 +174,12 @@ static void volume_bar(int x, int y, int level)
 void frontend_options(int cursor, const settings_t *s, int erase)
 {
     ui_shade(0, 0, 320, 240, 110);
-    ui_box(30, 40, 290, 196);
+    ui_box(30, 40, 290, 200);
     ui_heading(64, STYLE_TITLE, "OPTIONS");
-    const int x = 50, y0 = 92, lh = 18;
-    static const char *const LABELS[OPT_COUNT] = { "MUSIC", "SOUND", "BOTS FILL EMPTY SLOTS", "ERASE HIGH SCORES", "BACK" };
+    const int x = 50, y0 = 90, lh = 16;
+    static const char *const LABELS[OPT_COUNT] = {
+        "MUSIC", "SOUND", "BOTS FILL EMPTY SLOTS", "ERASE HIGH SCORES", "RESET CAMPAIGN", "BACK",
+    };
     for (int i = 0; i < OPT_COUNT; i++) {
         int y = y0 + i * lh;
         int style = i == cursor ? STYLE_TITLE : STYLE_NORMAL;
@@ -184,11 +191,71 @@ void frontend_options(int cursor, const settings_t *s, int erase)
             volume_bar(180, y, s->sfx);
         else if (i == OPT_BOTS)
             rdpq_text_printf(&(rdpq_textparms_t){ .style_id = (int16_t)style }, FONT, 220, y, "%s", s->bots ? "ON" : "OFF");
-        else if (i == OPT_ERASE && i == cursor)
+        else if ((i == OPT_ERASE || i == OPT_RESET) && i == cursor)
             ui_progress(180, y - 7, 80, (float)erase / ERASE_HOLD);
     }
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM },
-                     FONT, 0, 186, cursor == OPT_ERASE ? "HOLD A TO ERASE" : "LEFT/RIGHT CHANGE    B BACK");
+                     FONT, 0, 188, cursor == OPT_ERASE ? "HOLD A TO ERASE" : cursor == OPT_RESET ? "HOLD A TO START OVER"
+                                                                                                 : "LEFT/RIGHT CHANGE    B BACK");
+}
+
+// Where a planet sits on screen.
+static void planet_xy(int i, int *x, int *y)
+{
+    *x = 28 + planet_defs[i].x * 264 / 100;
+    *y = 52 + planet_defs[i].y * 100 / 100;
+}
+
+void frontend_sector(const campaign_t *c, int selected, uint32_t frames)
+{
+    ui_stars(frames);
+    ui_heading(32, STYLE_TITLE, "THE VARRO SECTOR");
+    // Supply lines between planets: dots, lit where the way is open.
+    rdpq_set_mode_fill(RGBA32(60, 60, 70, 0xFF));
+    for (int i = 0; i < PLANET_COUNT; i++) {
+        for (int k = 0; k < 2; k++) {
+            int from = planet_defs[i].needs[k];
+            if (from == PLANET_NONE)
+                continue;
+            int x0, y0, x1, y1;
+            planet_xy(from, &x0, &y0);
+            planet_xy(i, &x1, &y1);
+            bool lit = campaign_liberated(c, from);
+            rdpq_set_fill_color(lit ? RGBA32(0xE8, 0x96, 0x28, 0xFF) : RGBA32(60, 60, 70, 0xFF));
+            for (int d = 1; d < 10; d++) {
+                int x = x0 + (x1 - x0) * d / 10, y = y0 + (y1 - y0) * d / 10;
+                rdpq_fill_rectangle(x, y, x + 2, y + 2);
+            }
+        }
+    }
+    // Planets: their biome's colour when open, grey when not; a green ring
+    // once liberated; the selected one pulses.
+    static const uint8_t LOCKED[3] = { 56, 56, 66 }, FREE[3] = { 90, 240, 110 }, RING[3] = { 255, 255, 255 };
+    for (int i = 0; i < PLANET_COUNT; i++) {
+        int x, y;
+        planet_xy(i, &x, &y);
+        bool open = campaign_open(c, i);
+        int r = i == PLANET_COUNT - 1 ? 10 : 7;
+        if (i == selected && (frames / 8) % 2)
+            ui_disc(x, y, r + 3, RING);
+        if (campaign_liberated(c, i))
+            ui_disc(x, y, r + 2, FREE);
+        ui_disc(x, y, r, open ? biome_rgb[planet_defs[i].biome] : LOCKED);
+        rdpq_text_printf(&(rdpq_textparms_t){ .width = 60, .align = ALIGN_CENTER,
+                                              .style_id = (int16_t)(campaign_liberated(c, i) ? STYLE_GOOD
+                                                                    : open ? STYLE_NORMAL : STYLE_DIM) },
+                         FONT, (float)(x - 30), (float)(y + r + 12), "%d%%", c->liberation[i]);
+    }
+    // The selected planet.
+    const planet_def_t *p = &planet_defs[selected];
+    ui_box(16, 168, 304, 224);
+    ui_heading(186, campaign_liberated(c, selected) ? STYLE_GOOD : STYLE_TITLE, p->name);
+    rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER }, FONT, 0, 200,
+                     "%s   THREAT ^02%s^00   LIBERATION %d%%", BIOME_NAME[p->biome],
+                     difficulty_defs[p->threat].name, c->liberation[selected]);
+    rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM }, FONT, 0, 216,
+                     "%s", campaign_complete(c) ? "SECTOR LIBERATED!  A: DEPLOY  B: BACK"
+                                                : "LEFT/RIGHT: PLANET   A: DEPLOY   B: BACK");
 }
 
 void frontend_credits(void)
@@ -244,7 +311,7 @@ void frontend_briefing(const briefing_t *b, const sim_t *sim, uint8_t connected,
     bool bots = sim->settings.bots;
     const mission_t *m = &sim->mission;
     ui_stars(frames);
-    ui_planet(218, 12);
+    ui_planet(218, 12, sim->settings.biome);
     // "OPERATION" goes on the label line, so the name never takes more than
     // two heading lines (the longest words are nine letters).
     rdpq_text_printf(&(rdpq_textparms_t){ .style_id = STYLE_DIM }, FONT, 20, 36, "MISSION BRIEFING: OPERATION");

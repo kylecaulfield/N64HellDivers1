@@ -23,6 +23,7 @@ typedef enum {
     SCREEN_BRIEFING,  // loading screen: operation, objectives, squad
     SCREEN_MISSION,   // the game, its pause screen and results
     SCREEN_INITIALS,  // a new high score
+    SCREEN_SECTOR,    // the campaign's sector map: pick a planet to deploy to
 } screen_t;
 
 // Menu input this frame from any controller in `ports` (bit per port).
@@ -37,7 +38,7 @@ typedef struct {
 nav_t frontend_nav(const input_frame_t *in, uint8_t ports);
 
 enum { MENU_DEPLOY, MENU_SCORES, MENU_OPTIONS, MENU_CREDITS, MENU_COUNT };
-enum { OPT_MUSIC, OPT_SFX, OPT_BOTS, OPT_ERASE, OPT_BACK, OPT_COUNT };
+enum { OPT_MUSIC, OPT_SFX, OPT_BOTS, OPT_ERASE, OPT_RESET, OPT_BACK, OPT_COUNT };
 
 typedef struct {
     char operation[32];  // the name after "OPERATION": two words
@@ -50,8 +51,13 @@ void frontend_loading(float frac);
 void frontend_splash(uint32_t frames);
 void frontend_title(uint32_t frames, const hiscore_table_t *t, bool saving);
 void frontend_menu(int cursor, uint32_t frames);
-// erase: frames A has been held on "erase high scores" (0..ERASE_HOLD).
+// erase: frames A has been held on "erase high scores" or "reset campaign"
+// (0..ERASE_HOLD).
 void frontend_options(int cursor, const settings_t *s, int erase);
+// The sector map, `selected` planet highlighted.
+void frontend_sector(const campaign_t *c, int selected, uint32_t frames);
+// Planet colours by biome, for the map and the briefing.
+extern const uint8_t biome_rgb[BIOME_COUNT][3];
 void frontend_credits(void);
 // highlight: rank to blink, or -1. footer: what START/B do here.
 void frontend_scores(const hiscore_table_t *t, int highlight, uint32_t frames, const char *footer);

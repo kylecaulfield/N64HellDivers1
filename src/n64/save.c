@@ -3,15 +3,23 @@
 #include <libdragon.h>
 #include <string.h>
 
-#define SETTINGS_VERSION 2
+#define SETTINGS_VERSION 3
 
 static const eepfs_entry_t FILES[] = {
     { .path = "/settings", .size = sizeof(settings_t), .checksum = true, .backup = true },
     { .path = "/scores", .size = sizeof(hiscore_table_t), .checksum = true, .backup = true },
+    { .path = "/campaign", .size = sizeof(campaign_t), .checksum = true, .backup = true },
 };
 
 static settings_t settings;
 static hiscore_table_t scores;
+static campaign_t campaign;
+
+// The file sizes are part of the EEPROM's signature: changing one wipes
+// every save. Grow into the reserved bytes instead.
+_Static_assert(sizeof(settings_t) == 32, "settings_t changes the EEPROM layout");
+_Static_assert(sizeof(campaign_t) == 16, "campaign_t changes the EEPROM layout");
+_Static_assert(sizeof(hiscore_table_t) == 120, "hiscore_table_t changes the EEPROM layout");
 static bool available;
 
 static void settings_defaults(void)
@@ -27,6 +35,8 @@ static void clamp_settings(void)
     settings.bots = settings.bots ? 1 : 0;
     if (settings.difficulty >= DIFFICULTY_COUNT)
         settings.difficulty = 0;
+    if (settings.planet >= PLANET_COUNT)
+        settings.planet = 0;
     for (int i = 0; i < SIM_MAX_PLAYERS; i++)
         if (settings.scheme[i] >= SCHEME_COUNT)
             settings.scheme[i] = SCHEME_A;
@@ -36,6 +46,7 @@ void save_init(void)
 {
     settings_defaults();
     hiscore_defaults(&scores);
+    campaign_reset(&campaign);
     eeprom_type_t type = eeprom_present();
     if (type == EEPROM_NONE) {
         debugf("save: no EEPROM, running on defaults\n");
@@ -53,6 +64,7 @@ void save_init(void)
         eepfs_wipe();
         save_write_settings();
         save_write_scores();
+        save_write_campaign();
         return;
     }
     if (eepfs_read("/settings", &settings, sizeof(settings)) != EEPFS_ESUCCESS ||
@@ -66,7 +78,13 @@ void save_init(void)
         hiscore_defaults(&scores);
     }
     hiscore_sanitize(&scores);
-    debugf("save: loaded (top score %lu)\n", (unsigned long)scores.entries[0].score);
+    if (eepfs_read("/campaign", &campaign, sizeof(campaign)) != EEPFS_ESUCCESS) {
+        debugf("save: campaign unreadable, starting over\n");
+        campaign_reset(&campaign);
+    }
+    campaign_sanitize(&campaign);
+    debugf("save: loaded (top score %lu, planet 1 at %u%%)\n", (unsigned long)scores.entries[0].score,
+           campaign.liberation[0]);
 }
 
 bool save_available(void)
@@ -82,6 +100,23 @@ settings_t *save_settings(void)
 hiscore_table_t *save_scores(void)
 {
     return &scores;
+}
+
+campaign_t *save_campaign(void)
+{
+    return &campaign;
+}
+
+void save_write_campaign(void)
+{
+    if (available && eepfs_write("/campaign", &campaign, sizeof(campaign)) != EEPFS_ESUCCESS)
+        debugf("save: writing campaign failed\n");
+}
+
+void save_reset_campaign(void)
+{
+    campaign_reset(&campaign);
+    save_write_campaign();
 }
 
 void save_write_settings(void)

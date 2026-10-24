@@ -10,6 +10,8 @@ Writes, all original and drawn here procedurally:
   OUT_DIR/logo.png               the HIVEBREAKERS logo: the same face at 4x,
                                  amber-to-red gradient, outline, drop shadow
   OUT_DIR/planet.png             a shaded alien planet for the briefing screen
+  OUT_DIR/planet_ash.png         ...the same planet as an ash world
+  OUT_DIR/planet_frost.png       ...and as an ice world
 
 The build converts them with libdragon's mkfont and mksprite. Standard
 library only, deterministic.
@@ -206,7 +208,16 @@ def value_noise(seed, size):
     return at
 
 
-def make_planet(out):
+# Each biome's planet: band colours (dark, light) and the atmosphere's rim.
+PLANETS = {
+    "planet":       ((150, 85, 50), (220, 135, 75), (255, 150, 90)),
+    "planet_ash":   ((70, 58, 56), (140, 108, 98), (255, 110, 70)),
+    "planet_frost": ((150, 170, 200), (226, 236, 250), (170, 210, 255)),
+}
+
+
+def make_planet(out, name="planet"):
+    lo, hi, atmosphere = PLANETS[name]
     n = 96
     r = n / 2 - 3
     noise = value_noise(7, 16)
@@ -222,7 +233,7 @@ def make_planet(out):
                 continue
             if d2 > 1.0:  # thin atmosphere rim
                 a = int(255 * (1.12 - d2) / 0.12 * 0.6)
-                img[y][x] = (255, 150, 90, a)
+                img[y][x] = atmosphere + (a,)
                 continue
             dz = math.sqrt(1 - d2)
             # Latitude bands warped by noise, like a dusty desert world.
@@ -230,7 +241,7 @@ def make_planet(out):
             v = dy * 4.0
             band = 0.5 + 0.5 * math.sin(v * 2.2 + 2.5 * noise(u * 2.0, v * 1.5))
             spot = noise(u * 4.0 + 7, v * 4.0 + 3)
-            base = (150 + 70 * band, 85 + 50 * band, 50 + 25 * band)
+            base = tuple(a + (b - a) * band for a, b in zip(lo, hi))
             if spot > 0.78:  # dark hive scars
                 base = (base[0] * 0.45, base[1] * 0.35, base[2] * 0.5)
             lit = max(0.0, dx * light[0] + dy * light[1] + dz * light[2])
@@ -238,7 +249,7 @@ def make_planet(out):
             rim = (1 - dz) ** 3 * 0.5
             c = tuple(int(min(255, v * shade + 255 * rim * k)) for v, k in zip(base, (1.0, 0.6, 0.4)))
             img[y][x] = (c[0], c[1], c[2], 255)
-    write_png(os.path.join(out, "planet.png"), n, n, img)
+    write_png(os.path.join(out, name + ".png"), n, n, img)
 
 
 def main():
@@ -249,7 +260,8 @@ def main():
     os.makedirs(out, exist_ok=True)
     make_font(out)
     make_logo(out)
-    make_planet(out)
+    for name in PLANETS:
+        make_planet(out, name)
 
 
 if __name__ == "__main__":

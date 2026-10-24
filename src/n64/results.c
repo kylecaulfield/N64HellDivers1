@@ -63,7 +63,7 @@ static unsigned accuracy(const player_stats_t *p)
 // The objective's parts, as the results and the log name them.
 static const char *const PARTS[OBJ_COUNT] = { "ZONES", "NESTS", "STAGES" };
 
-void results_draw(const sim_t *sim, const mission_score_t *sc, int rank)
+void results_draw(const sim_t *sim, const mission_score_t *sc, int rank, const results_campaign_t *lib)
 {
     const mission_stats_t *st = &sim->mission.stats;
     bool won = sim->mission.phase == MISSION_SUCCESS;
@@ -76,16 +76,29 @@ void results_draw(const sim_t *sim, const mission_score_t *sc, int rank)
     int sec = (int)(st->ticks / SIM_HZ);
     int parts, done = mission_parts(sim, &parts);
     int obj = sim->mission.objective % OBJ_COUNT;
+    // The planet's liberation, on the line before the player rows.
+    char planet[64] = "";
+    if (lib && lib->planet) {
+        if (!lib->counted)
+            snprintf(planet, sizeof(planet), "^%02X%s: DEBUG AIDS, NOT COUNTED^00", STYLE_DIM, lib->planet);
+        else if (lib->complete)
+            snprintf(planet, sizeof(planet), "^%02XSECTOR LIBERATED! THE HIVE IS BROKEN^00", STYLE_GOOD);
+        else if (lib->liberated)
+            snprintf(planet, sizeof(planet), "^%02X%s LIBERATED!^00", STYLE_GOOD, lib->planet);
+        else
+            snprintf(planet, sizeof(planet), "%s  ^%02X+%d%%^00  LIBERATION %d%%", lib->planet,
+                     lib->gain ? STYLE_GOOD : STYLE_DIM, lib->gain, lib->now);
+    }
     int at = snprintf(text, sizeof(text),
                       "TIME %d:%02d    WAVES %u    REINFORCEMENTS %u\n"
                       "KILLS %d: %u skitters %u gnashers %u bulwarks\n"
                       "EXTRACTED %d OF %d   %s %d/%d   ^%02X%s^00\n"
-                      "\n"
+                      "%s\n"
                       "^%02X      KILLS  DEATHS   ACC  FF  CALLS^00",
                       sec / 60, sec % 60, sim->waves.number, st->reinforcements,
                       total_kills(st), st->kills[ENEMY_SKITTER], st->kills[ENEMY_GNASHER],
                       st->kills[ENEMY_BULWARK], count_bits(sim->mission.extracted), squad_size(sim),
-                      PARTS[obj], done, parts, STYLE_TITLE, sim_difficulty(sim)->name, STYLE_DIM);
+                      PARTS[obj], done, parts, STYLE_TITLE, sim_difficulty(sim)->name, planet, STYLE_DIM);
     for (int i = 0; i < SIM_MAX_PLAYERS && at < (int)sizeof(text) - 80; i++) {
         if (!took_part(sim, i))
             continue;

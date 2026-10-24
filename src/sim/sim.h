@@ -56,6 +56,9 @@ typedef enum {
     OBJ_COUNT
 } objective_type_t;
 
+// How a planet's ground and light look (visual only; campaign.h).
+typedef enum { BIOME_DUST, BIOME_ASH, BIOME_FROST, BIOME_COUNT } biome_t;
+
 // Difficulty levels (difficulty.h has what each changes).
 #define DIFFICULTY_COUNT    5
 #define DIFFICULTY_STANDARD 1
@@ -435,6 +438,7 @@ typedef struct {
     uint8_t  scheme[SIM_MAX_PLAYERS]; // control_scheme_t per port
     uint8_t  difficulty;              // 0..DIFFICULTY_COUNT-1, for the next mission
     uint8_t  objective;               // objective_type_t, for the next mission
+    uint8_t  biome;                   // biome_t, for the renderer (the sim ignores it)
     bool     god_mode;
     bool     infinite_ammo;
     bool     waves;                   // wave spawner on

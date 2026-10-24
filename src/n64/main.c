@@ -75,6 +75,7 @@ static bool score_eligible;
 static char initials[3] = { 'A', 'A', 'A' };
 static int initials_pos;
 static int planet;                   // the mission's planet (campaign.h)
+static uint32_t demo_frames;         // the attract demo's current mission, frames
 static uint8_t squad_next;           // who goes to the briefing from the sector map
 static results_campaign_t liberation; // what the mission did for its planet
 static uint32_t frames;              // since boot
@@ -188,6 +189,8 @@ static void new_demo(void)
     sim.settings.difficulty = DIFFICULTY_STANDARD;
     sim_demo(&sim, seed);
     world_changed();
+    demo_frames = 0;
+    debugf("demo: objective %u, world %u\n", sim.settings.objective, sim.settings.biome);
 }
 
 static void to_title(void)
@@ -654,7 +657,9 @@ int main(void)
         uint64_t t_sim = get_ticks();
         sound_update();
 
-        if (demo && (mission_over(&sim) || screen_frames % DEMO_FRAMES == DEMO_FRAMES - 1))
+        // (Its own counter: the title and its attract table take turns, and
+        // each change of screen restarts screen_frames.)
+        if (demo && (mission_over(&sim) || ++demo_frames >= DEMO_FRAMES))
             new_demo();
         if (screen == SCREEN_MISSION) {
             if (++mission_frames == HEAP_BASELINE_FRAME)

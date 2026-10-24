@@ -32,7 +32,7 @@ LIBDRAGON_STAMP := $(SDK)/.libdragon-$(LIBDRAGON_REV)
 TINY3D_STAMP    := $(SDK)/.tiny3d-$(TINY3D_REV)
 SDK_VARS        := N64_INST=$(SDK) N64_GCCPREFIX=$(N64_GCCPREFIX)
 
-.PHONY: all rom sdk test toolchain clean distclean check-toolchain check-sim-purity
+.PHONY: all rom sdk test toolchain clean distclean check-toolchain check-sim-purity FORCE
 
 all: rom
 
@@ -103,9 +103,15 @@ TEST_CFLAGS := -std=gnu17 -O1 -g -Wall -Wextra -Werror -Wshadow -Wdouble-promoti
                $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all) \
                -Isrc/sim -Itests -I$(TEST_DIR)
 
-$(TEST_DIR)/test_list.h: $(filter-out tests/test_main.c,$(TEST_SRC))
+FORCE:
+
+# Rebuilt every time (a deleted test file must drop out too), but only
+# replaced when the list changes, so the tests only relink when they must.
+$(TEST_DIR)/test_list.h: FORCE
 	@mkdir -p $(dir $@)
-	@grep -hoE '^void test_[A-Za-z0-9_]+\(void\)' $^ | sed -E 's/^void (test_[A-Za-z0-9_]+)\(void\)/X(\1)/' > $@
+	@grep -hoE '^void test_[A-Za-z0-9_]+\(void\)' $(filter-out tests/test_main.c,$(TEST_SRC)) | \
+		sed -E 's/^void (test_[A-Za-z0-9_]+)\(void\)/X(\1)/' > $@.tmp
+	@if cmp -s $@.tmp $@; then rm $@.tmp; else mv $@.tmp $@; fi
 
 $(TEST_DIR)/run_tests: $(SIM_SRC) $(TEST_SRC) $(wildcard src/sim/*.h) tests/test.h $(TEST_DIR)/test_list.h
 	@mkdir -p $(dir $@)

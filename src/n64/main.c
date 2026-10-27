@@ -577,6 +577,50 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
 
 // --- Drawing ---------------------------------------------------------------------
 
+// Each frame's 2D layer (HUD, menus, overlay) is recorded into an rspq
+// queue, one per framebuffer, and then run. Written straight into the RSP
+// command ring (2 KB) its few thousand words of text commands filled it while
+// the RSP was still drawing the 3D, and the CPU waited for room instead of
+// moving on to the next frame's sim. A framebuffer from display_get has
+// finished its previous frame, the queue run in it included, so its queue
+// can be cleared and recorded again. (Reused rspq blocks corrupted the heap
+// on the title screen at the pinned libdragon; queues, which libdragon offers
+// for exactly this, don't.)
+static rspq_queue_t *layer_2d[FB_COUNT];
+static surface_t *layer_fb[FB_COUNT];
+
+// A queue allocates as it fills, in chunks doubling from 64 to 8192 words, and
+// the heap must not grow during a mission (the watchdog caught the debug
+// menu over the HUD taking one past 2000 words). So each is filled once when
+// created, up to and into its largest chunk, and keeps that memory.
+#define LAYER_PREFILL_WORDS 12000
+
+static rspq_queue_t *layer_queue(int slot)
+{
+    if (!layer_2d[slot]) {
+        rspq_queue_t *q = rspq_queue_create();
+        rspq_queue_switch(q);
+        for (int i = 0; i < LAYER_PREFILL_WORDS; i++)
+            rspq_noop(); // one word each
+        rspq_queue_switch(NULL);
+        rspq_queue_clear(q);
+        layer_2d[slot] = q;
+    }
+    return layer_2d[slot];
+}
+
+static int layer_slot(const surface_t *fb)
+{
+    for (int i = 0; i < FB_COUNT; i++) {
+        if (!layer_fb[i])
+            layer_fb[i] = (surface_t *)fb;
+        if (layer_fb[i] == fb)
+            return i;
+    }
+    assertf(false, "more framebuffers than FB_COUNT");
+    return 0;
+}
+
 static bool world_visible(void)
 {
     return screen != SCREEN_SPLASH && screen != SCREEN_BRIEFING && screen != SCREEN_SECTOR &&
@@ -765,15 +809,24 @@ int main(void)
             rdpq_attach_clear(fb, NULL);
         }
         uint64_t t_hud = get_ticks();
-        draw_2d(connected);
-        if (screen == SCREEN_MISSION)
-            menu_draw(&sim);
-        overlay_draw();
+        if (!(bench_skip() & BENCH_SKIP_HUD)) {
+            rspq_queue_t *layer = layer_queue(layer_slot(rdpq_get_attached()));
+            rspq_queue_clear(layer);
+            rspq_queue_switch(layer);
+            draw_2d(connected);
+            if (screen == SCREEN_MISSION)
+                menu_draw(&sim);
+            overlay_draw();
+            rspq_queue_switch(NULL);
+            rspq_queue_run(layer);
+        }
         uint32_t hud_us = (uint32_t)TICKS_TO_US(get_ticks() - t_hud);
         if (world_visible())
             render_end();
         else
             rdpq_detach_show();
+        if (bench_skip() & BENCH_SERIAL)
+            rspq_wait();
         gpu_timing_frame();
         uint64_t t_end = get_ticks();
         sound_update();

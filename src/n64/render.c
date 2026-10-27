@@ -1,5 +1,7 @@
 #include "render.h"
+#include "bench.h"
 #include "camera.h"
+#include "enemy.h"
 #include "fx.h"
 #include "gpu_timing.h"
 #include "mission.h"
@@ -7,6 +9,7 @@
 
 #include <libdragon.h>
 #include <stdio.h>
+#include <string.h>
 #include <t3d/t3d.h>
 #include <t3d/t3danim.h>
 #include <t3d/t3dmodel.h>
@@ -19,12 +22,17 @@
 // particles: one opaque pass, then one semi-transparent pass for explosion
 // cores. Camera shake and the explosion flash come from fx.
 //
-// Bugs and soldiers are skinned. Bugs of one type share POSE_SLOTS
-// skeletons; each bug just points the RSP at the slot it uses before its
-// draw block runs (t3d_skeleton_use), so animating 200 bugs costs the same
-// as animating 7. Bugs are drawn grouped by type: the type's material once,
-// then a geometry-only block per bug (the pattern of Tiny3D's 17_culling
-// example), so the RSP does not switch to rdpq mode changes per bug.
+// Soldiers are skinned. Bugs are rigged too, but their animation is baked:
+// at boot each type's walk and attack clips are sampled once per sim tick and
+// the mesh is skinned on the CPU into a vertex buffer per frame (see
+// bake_clip). A bug then draws as a static mesh, its draw block reading
+// whichever frame a segment points at: one matrix and its vertices, without
+// a bone matrix per part, which cost the RSP most of a bug's time. Walking
+// bugs each keep their own phase of the cycle; attacking ones follow their
+// own windup and recovery. Nothing is animated per frame. Bugs are drawn
+// grouped by type: the type's material once, then a geometry-only block per
+// bug (the pattern of Tiny3D's 17_culling example), so the RSP does not
+// switch to rdpq mode changes per bug.
 
 // Bug models must be in enemy_type_t order, right after the soldier.
 enum {
@@ -53,6 +61,20 @@ static const uint8_t biome_light[BIOME_COUNT][3][3] = {
     [BIOME_FROST] = { { 18, 24, 32 }, { 92, 102, 124 }, { 225, 236, 255 } },
 };
 
+// The floor comes in 8 m chunks (tools/genmodels.py, arena_floor), each an
+// object with its own bounds, and only those on screen are drawn: a third of
+// the arena or less. Drawing all of it cost the RSP about 3 ms a frame.
+#define GROUND_CHUNKS 64
+typedef struct {
+    rspq_block_t *material;
+    int count;
+    struct {
+        rspq_block_t *block;
+        vec2 min, max; // in sim coordinates
+    } chunk[GROUND_CHUNKS];
+} ground_t;
+static ground_t grounds[BIOME_COUNT];
+
 // What falls from orbit for each calldown (-1: nothing, it is a strike), and
 // the colour of its beacon light.
 static const int8_t drop_model[CALLDOWN_COUNT] = {
@@ -70,12 +92,24 @@ static const uint8_t beacon_rgb[CALLDOWN_COUNT][3] = {
     [CALLDOWN_NAPALM] = { 255, 100, 20 }, [CALLDOWN_EXTRACTION] = { 230, 240, 255 },
 };
 
+// A baked clip: `count` copies of the model's vertex buffer (`pairs`
+// T3DVertPacked each), skinned to one pose per sim tick.
 typedef struct {
-    T3DSkeleton skel;
-    T3DAnim anim;
-} pose_slot_t;
+    T3DVertPacked *frames;
+    uint16_t count, pairs;
+} pose_clip_t;
+// The segment the bug draw blocks read their vertices through.
+#define SEG_BUG_FRAME T3D_SEGMENT_1
 
-static pose_slot_t bug_pose[ENEMY_TYPE_COUNT][POSE_SLOTS];
+static pose_clip_t bug_walk[ENEMY_TYPE_COUNT], bug_attack[ENEMY_TYPE_COUNT];
+static uint32_t pose_ticks; // game ticks animated so far (they stop while paused)
+
+// Where the attack clip's rear-up ends and the strike starts, as a fraction
+// of the clip (tools/genmodels.py, add_attack): the windup plays up to here,
+// the recovery the rest.
+#define ATTACK_REAR_END 0.55f
+// Frames between neighbouring bugs' walk phases, so a crowd doesn't march in step.
+#define WALK_PHASE_STEP 5
 
 static struct {
     T3DSkeleton skel;
@@ -126,7 +160,7 @@ static T3DMat4FP *static_mats;    // [0] = floor, [1..] = rocks
 static T3DMat4FP *dynamic_mats;   // [FB_COUNT][MAX_DYNAMIC]
 static TPXParticleS16 *particles; // [FB_COUNT][PARTICLE_PAIRS]
 static T3DMat4FP *particle_mat;   // identity: particles are already in world units
-static uint8_t dyn_pose[MAX_DYNAMIC]; // pose slot per dynamic matrix (bugs only)
+static const T3DVertPacked *dyn_frame[MAX_DYNAMIC]; // baked frame per dynamic matrix (bugs only)
 static uint8_t dyn_type[MAX_DYNAMIC]; // enemy type per dynamic matrix (bugs only)
 static uint8_t prop_model[MAX_PROPS]; // model per prop matrix
 
@@ -148,6 +182,175 @@ static void unit_matrix(T3DMat4FP *out, vec2 pos, float lift, vec2 facing, float
     t3d_mat4_to_fixed(out, &m);
 }
 
+// Move one vertex of a packed pair (`half` 0 or 1) from its bone's space
+// into the model's: what the RSP does with a bone matrix, done once here.
+static void skin_vertex(T3DVertPacked *v, int half, const T3DMat4x3 *m)
+{
+    int16_t *pos = half ? v->posB : v->posA;
+    uint16_t *norm = half ? &v->normB : &v->normA;
+    float x = pos[0], y = pos[1], z = pos[2];
+    for (int i = 0; i < 3; i++) {
+        float o = m->m[0][i] * x + m->m[1][i] * y + m->m[2][i] * z + m->m[3][i];
+        pos[i] = (int16_t)fmaxf(-32768.0f, fminf(32767.0f, roundf(o)));
+    }
+    // The normal is packed 5,6,5 (t3d_vert_pack_normal): unpack, rotate, repack.
+    int nx = (*norm >> 11) & 31, ny = (*norm >> 5) & 63, nz = *norm & 31;
+    float n[3] = { (float)(nx >= 16 ? nx - 32 : nx) / 15.5f, (float)(ny >= 32 ? ny - 64 : ny) / 31.5f,
+                   (float)(nz >= 16 ? nz - 32 : nz) / 15.5f };
+    T3DVec3 r;
+    for (int i = 0; i < 3; i++)
+        r.v[i] = m->m[0][i] * n[0] + m->m[1][i] * n[1] + m->m[2][i] * n[2];
+    *norm = t3d_vert_pack_normal(&r);
+}
+
+// Split a floor model into its chunks' draw blocks and bounds.
+static void bind_ground(ground_t *g, T3DModel *model)
+{
+    T3DModelState state = t3d_model_state_create();
+    T3DModelIter it = t3d_model_iter_create(model, T3D_CHUNK_TYPE_OBJECT);
+    while (t3d_model_iter_next(&it) && g->count < GROUND_CHUNKS) {
+        if (!g->material && it.object->material) {
+            rspq_block_begin();
+            t3d_model_draw_material(it.object->material, &state);
+            g->material = rspq_block_end();
+        }
+        rspq_block_begin();
+        t3d_model_draw_object(it.object, NULL);
+        g->chunk[g->count].block = rspq_block_end();
+        // The floor's matrix turns it half way round (unit_matrix facing
+        // north): sim x is minus model x, sim y is model z.
+        const float k = 1.0f / 64.0f; // model units per metre
+        g->chunk[g->count].min = v2(-it.object->aabbMax[0] * k, it.object->aabbMin[2] * k);
+        g->chunk[g->count].max = v2(-it.object->aabbMin[0] * k, it.object->aabbMax[2] * k);
+        g->count++;
+    }
+    debugf("render: floor in %d chunks\n", g->count);
+}
+
+// Sample `name` once per sim tick and skin the model's vertices to each
+// pose, into buffers the RSP reads directly.
+static pose_clip_t bake_clip(const T3DModel *model, const char *name)
+{
+    T3DSkeleton skel = t3d_skeleton_create(model);
+    T3DAnim anim = t3d_anim_create(model, name);
+    t3d_anim_attach(&anim, &skel);
+    float duration = anim.animRef->duration;
+    int count = (int)(duration / SIM_DT + 0.5f);
+    if (count < 1)
+        count = 1;
+    // The vertex buffer every object's parts load from, up to its last pair.
+    const T3DVertPacked *base = t3d_model_get_vertices(model);
+    int pairs = 0;
+    T3DModelIter it = t3d_model_iter_create(model, T3D_CHUNK_TYPE_OBJECT);
+    while (t3d_model_iter_next(&it)) {
+        for (uint32_t p = 0; p < it.object->numParts; p++) {
+            const T3DObjectPart *part = &it.object->parts[p];
+            int end = (int)(part->vert - base) + (part->vertLoadCount + 1) / 2;
+            if (end > pairs)
+                pairs = end;
+        }
+    }
+    pose_clip_t clip = { malloc_uncached(sizeof(T3DVertPacked) * pairs * count), (uint16_t)count, (uint16_t)pairs };
+    for (int f = 0; f < count; f++) {
+        t3d_anim_set_time(&anim, duration * (float)f / (float)count);
+        t3d_anim_update(&anim, 0.0f);
+        t3d_skeleton_update(&skel);
+        T3DVertPacked *out = &clip.frames[f * pairs];
+        memcpy(out, base, sizeof(T3DVertPacked) * pairs);
+        it = t3d_model_iter_create(model, T3D_CHUNK_TYPE_OBJECT);
+        while (t3d_model_iter_next(&it)) {
+            for (uint32_t p = 0; p < it.object->numParts; p++) {
+                const T3DObjectPart *part = &it.object->parts[p];
+                if (part->matrixIdx == 0xFFFF) // not on a bone: already in model space
+                    continue;
+                const T3DMat4x3 *m = &skel.bones[part->matrixIdx].matrix;
+                T3DVertPacked *v = &out[part->vert - base];
+                for (int k = 0; k < part->vertLoadCount; k++)
+                    skin_vertex(&v[k / 2], k & 1, m);
+            }
+        }
+    }
+    t3d_anim_destroy(&anim);
+    t3d_skeleton_destroy(&skel);
+    return clip;
+}
+
+// Record a baked bug's draw: t3d_model_draw_object without bones, and with
+// fewer vertex loads. The importer cut the mesh into a part per bone, each
+// its own load, and only the last part of a run draws triangles; baked,
+// the bones are gone, so a run whose parts sit in the vertex cache in the
+// same order as in memory loads in one go. Each load costs the RSP a DMA and
+// a lighting pass of its own.
+static void record_bug_object(const T3DObject *obj)
+{
+    uint32_t run = 0; // first part of the current run of loads
+    for (uint32_t p = 0; p < obj->numParts; p++) {
+        const T3DObjectPart *part = &obj->parts[p];
+        bool draws = part->numIndices || part->numStripIndices[0] || part->idxSeqCount;
+        if (!draws && p + 1 < obj->numParts)
+            continue;
+        // Load the run [run, p]: in one go when it is contiguous and fits.
+        const T3DObjectPart *first = &obj->parts[run];
+        bool merge = true;
+        for (uint32_t q = run; q <= p; q++) {
+            const T3DObjectPart *r = &obj->parts[q];
+            int pairs = (int)(((uintptr_t)r->vert - (uintptr_t)first->vert) / sizeof(T3DVertPacked));
+            merge &= r->vertDestOffset - first->vertDestOffset == pairs * 2;
+        }
+        int count = part->vertDestOffset + part->vertLoadCount - first->vertDestOffset;
+        if (merge && count <= 70) {
+            t3d_vert_load(first->vert, first->vertDestOffset, (uint32_t)count);
+        } else {
+            for (uint32_t q = run; q <= p; q++)
+                t3d_vert_load(obj->parts[q].vert, obj->parts[q].vertDestOffset, obj->parts[q].vertLoadCount);
+        }
+        run = p + 1;
+        // Then its triangles, as t3d_model_draw_object draws them.
+        bool synced = false;
+        for (int i = 0; i < part->numIndices; i += 3)
+            t3d_tri_draw(part->indices[i], part->indices[i + 1], part->indices[i + 2]);
+        if (part->idxSeqCount) {
+            t3d_tri_draw_unindexed(part->idxSeqBase, part->idxSeqCount);
+            synced = true;
+        }
+        uint8_t *strip = (uint8_t *)(((uintptr_t)(part->indices + part->numIndices) + 7) & ~(uintptr_t)7);
+        for (int k = 0; k < 4 && part->numStripIndices[k]; k++) {
+            if (k == 3 || part->numStripIndices[k + 1] == 0) {
+                t3d_tri_draw_strip_and_sync((int16_t *)strip, part->numStripIndices[k]);
+                synced = true;
+                break;
+            }
+            synced = false;
+            t3d_tri_draw_strip((int16_t *)strip, part->numStripIndices[k]);
+            strip = (uint8_t *)(((uintptr_t)(strip + part->numStripIndices[k] * 2) + 7) & ~(uintptr_t)7);
+        }
+        if (!synced)
+            t3d_tri_sync();
+    }
+}
+
+// The baked frame bug `i` draws this frame.
+static const T3DVertPacked *bug_frame(const enemy_t *e, int i)
+{
+    const enemy_def_t *def = &enemy_defs[e->type];
+    const pose_clip_t *c;
+    int f;
+    if (e->state == ESTATE_CHASE) {
+        c = &bug_walk[e->type];
+        f = (int)((pose_ticks + (uint32_t)i * WALK_PHASE_STEP) % c->count);
+    } else {
+        c = &bug_attack[e->type];
+        bool windup = e->state == ESTATE_WINDUP;
+        int len = windup ? def->windup : def->recover;
+        float k = len ? (float)(len - e->timer) / (float)len : 1.0f; // timers count down
+        float t = windup ? k * ATTACK_REAR_END : ATTACK_REAR_END + k * (1.0f - ATTACK_REAR_END);
+        f = (int)(t * (float)c->count);
+        if (f >= c->count)
+            f = c->count - 1;
+    }
+    return &c->frames[f * c->pairs];
+}
+
 int render_model_count(void)
 {
     return MDL_COUNT;
@@ -162,12 +365,26 @@ void render_init(void (*progress)(void))
         models[i] = t3d_model_load(path);
         if (progress)
             progress();
-        bool skinned = i <= MDL_BULWARK;
+        bool bug = i >= MDL_SKITTER && i <= MDL_BULWARK;
         int objects = 0;
         T3DModelIter it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
         while (t3d_model_iter_next(&it))
             objects++;
-        if (skinned && objects == 1) {
+        int ground = -1;
+        for (int b = 0; b < BIOME_COUNT; b++)
+            if (i == biome_ground[b])
+                ground = b;
+        if (bug) {
+            // Bake its clips, then point its vertex loads at the frame segment.
+            bug_walk[i - MDL_SKITTER] = bake_clip(models[i], "walk");
+            bug_attack[i - MDL_SKITTER] = bake_clip(models[i], "attack");
+            it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+            while (t3d_model_iter_next(&it))
+                t3d_model_make_object_vert_placeholder(models[i], it.object, SEG_BUG_FRAME);
+        }
+        if (ground >= 0) {
+            bind_ground(&grounds[ground], models[i]);
+        } else if ((bug || i == MDL_SOLDIER) && objects == 1) {
             T3DModelState state = t3d_model_state_create();
             rspq_block_begin();
             it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
@@ -185,14 +402,19 @@ void render_init(void (*progress)(void))
             } else {
                 bug_material[i - MDL_SKITTER] = rspq_block_end();
             }
-            // Buffered skeletons draw through the skeleton segment, so one
-            // recorded block serves every pose slot.
+            // The soldiers' buffered skeletons draw through the skeleton
+            // segment, so one recorded block serves all four; a bug's block
+            // has no bones at all.
             rspq_block_begin();
             it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
-            while (t3d_model_iter_next(&it))
-                t3d_model_draw_object(it.object, (const T3DMat4FP *)t3d_segment_placeholder(T3D_SEGMENT_SKELETON));
+            while (t3d_model_iter_next(&it)) {
+                if (bug)
+                    record_bug_object(it.object);
+                else
+                    t3d_model_draw_object(it.object, (const T3DMat4FP *)t3d_segment_placeholder(T3D_SEGMENT_SKELETON));
+            }
             blocks[i] = rspq_block_end();
-        } else if (skinned) {
+        } else if (i == MDL_SOLDIER) {
             T3DSkeleton tmp = t3d_skeleton_create_buffered(models[i], FB_COUNT);
             rspq_block_begin();
             t3d_model_draw_skinned(models[i], &tmp);
@@ -205,19 +427,6 @@ void render_init(void (*progress)(void))
         }
     }
 
-    for (int t = 0; t < ENEMY_TYPE_COUNT; t++) {
-        const T3DModel *m = models[MDL_SKITTER + t];
-        for (int k = 0; k < POSE_SLOTS; k++) {
-            pose_slot_t *ps = &bug_pose[t][k];
-            ps->skel = t3d_skeleton_create_buffered(m, FB_COUNT);
-            bool walk = k < WALK_SLOTS;
-            ps->anim = t3d_anim_create(m, walk ? "walk" : "attack");
-            t3d_anim_attach(&ps->anim, &ps->skel);
-            t3d_anim_set_looping(&ps->anim, true);
-            if (walk) // spread the walk cycles so a crowd doesn't march in step
-                t3d_anim_set_time(&ps->anim, ps->anim.animRef->duration * (float)k / WALK_SLOTS);
-        }
-    }
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         soldier_pose[i].skel = t3d_skeleton_create_buffered(models[MDL_SOLDIER], FB_COUNT);
         soldier_pose[i].run = t3d_anim_create(models[MDL_SOLDIER], "run");
@@ -677,20 +886,10 @@ static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 
 
 // --- Frame ---------------------------------------------------------------------
 
-// Advance the pose slots some bug on screen uses, and each soldier. An unused
-// slot just pauses: its skeleton keeps its last matrices.
-static void update_poses(const sim_t *sim, const bool used[ENEMY_TYPE_COUNT][POSE_SLOTS], float dt)
+// Animate each soldier (the bugs' clips are baked).
+static void update_poses(const sim_t *sim, float dt)
 {
     int updated = 0;
-    for (int t = 0; t < ENEMY_TYPE_COUNT; t++) {
-        for (int k = 0; k < POSE_SLOTS; k++) {
-            if (!used[t][k])
-                continue;
-            t3d_anim_update(&bug_pose[t][k].anim, dt);
-            t3d_skeleton_update(&bug_pose[t][k].skel);
-            updated++;
-        }
-    }
     for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
         const player_t *p = &sim->players[i];
         if (!sim_player_alive(p))
@@ -737,6 +936,7 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
 
     vec2 vmin, vmax;
     camera_view_rect(cam, CULL_PAD, &vmin, &vmax);
+    uint32_t skip = bench_skip();
 
     // Unit matrices (CPU) before waiting for a framebuffer.
     int ndyn = 0;
@@ -757,20 +957,15 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
         unit_matrix(&dyn[ndyn++], p->pos, lift, p->facing, pitch, 1.0f);
     }
     int first_bug = ndyn;
-    bool used[ENEMY_TYPE_COUNT][POSE_SLOTS] = { { false } };
+    pose_ticks += (uint32_t)(anim_dt / SIM_DT + 0.5f);
     for (int n = 0; n < sim->active_count; n++) {
         int i = sim->active[n];
         const enemy_t *e = &sim->enemies[i];
         if (!e->active || !in_rect(e->pos, vmin, vmax))
             continue;
-        uint8_t slot = e->state == ESTATE_CHASE ? (uint8_t)(i % WALK_SLOTS) : WALK_SLOTS;
-        used[e->type][slot] = true;
         dyn_type[ndyn] = e->type;
-        dyn_pose[ndyn] = slot;
-        // The windup still rears up a little on top of the attack pose, so
-        // the telegraph reads even though attack poses are shared.
-        float pitch = e->state == ESTATE_WINDUP ? -0.15f : 0.0f;
-        unit_matrix(&dyn[ndyn++], e->pos, 0.0f, e->facing, pitch, 1.0f);
+        dyn_frame[ndyn] = bug_frame(e, i);
+        unit_matrix(&dyn[ndyn++], e->pos, 0.0f, e->facing, 0.0f, 1.0f);
     }
     stats.drawn_bugs = (uint16_t)(ndyn - first_bug);
     int first_prop = ndyn;
@@ -778,7 +973,7 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     int glow_start = 0, nglow = 0;
     int npart = build_particles(sim, pbuf, vmin, vmax, &glow_start, &nglow);
     uint64_t t1 = get_ticks();
-    update_poses(sim, used, anim_dt);
+    update_poses(sim, anim_dt);
     uint64_t t2 = get_ticks();
     stats.build_us = (uint32_t)TICKS_TO_US(t1 - t0);
     stats.anim_us = (uint32_t)TICKS_TO_US(t2 - t1);
@@ -807,10 +1002,17 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     t3d_matrix_push_pos(1);
     t3d_matrix_set(&static_mats[0], true);
     int biome = sim->settings.biome % BIOME_COUNT;
-    rspq_block_run(blocks[biome_ground[biome]]);
+    const ground_t *ground = &grounds[biome];
+    if (ground->material && !(skip & BENCH_SKIP_WORLD))
+        rspq_block_run(ground->material);
+    for (int i = 0; i < ground->count && !(skip & BENCH_SKIP_WORLD); i++) {
+        const vec2 mn = ground->chunk[i].min, mx = ground->chunk[i].max;
+        if (mx.x >= vmin.x && mn.x <= vmax.x && mx.y >= vmin.y && mn.y <= vmax.y)
+            rspq_block_run(ground->chunk[i].block);
+    }
     for (int i = 0; i < sim->arena.obstacle_count; i++) {
         const obstacle_t *o = &sim->arena.obstacles[i];
-        if (!in_rect(o->pos, vmin, vmax))
+        if (!in_rect(o->pos, vmin, vmax) || (skip & BENCH_SKIP_WORLD))
             continue;
         t3d_matrix_set(&static_mats[1 + i], true);
         rspq_block_run(blocks[biome_rocks[biome] + o->kind]);
@@ -824,7 +1026,7 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
         t3d_matrix_set(&dyn[i], true);
         rspq_block_run(blocks[MDL_SOLDIER]);
     }
-    for (int t = 0; t < ENEMY_TYPE_COUNT; t++) {
+    for (int t = 0; t < ENEMY_TYPE_COUNT && !(skip & BENCH_SKIP_BUGS); t++) {
         bool material_set = false;
         for (int i = first_bug; i < ndyn; i++) {
             if (dyn_type[i] != t)
@@ -832,7 +1034,7 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
             if (!material_set && bug_material[t])
                 rspq_block_run(bug_material[t]);
             material_set = true;
-            t3d_skeleton_use(&bug_pose[t][dyn_pose[i]].skel);
+            t3d_segment_set(SEG_BUG_FRAME, (void *)dyn_frame[i]);
             t3d_matrix_set(&dyn[i], true);
             rspq_block_run(blocks[MDL_SKITTER + t]);
         }
@@ -843,6 +1045,8 @@ uint32_t render_scene(const sim_t *sim, float anim_dt)
     }
     t3d_matrix_pop(1);
 
+    if (skip & BENCH_SKIP_PARTICLES)
+        npart = nglow = 0;
     if (npart) {
         // tpx emits screen-space rectangles colored by prim; this is the
         // setup from Tiny3D's 18_particles example.

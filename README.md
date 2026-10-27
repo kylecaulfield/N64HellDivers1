@@ -9,7 +9,13 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M9**: loadouts and three new calldowns. After the
+**Status: milestone M10**: performance. In ares the stress bench now holds
+30 fps up to 128 bugs on screen, where M9 held it to 64. The CPU no longer
+waits on the RSP to draw the HUD, bug animation is baked at boot so bugs
+draw as static meshes, and only the visible part of the floor is drawn (see
+Stress bench). The enemy cap stays at 64 until hardware numbers arrive.
+
+M9 added loadouts and three new calldowns. After the
 briefing each player picks the four calldowns they take into the mission
 (Reinforce, Resupply and Extraction come with everyone). Liberating the
 first planets unlocks a **minefield**, a **grenade launcher** (an explosive
@@ -50,7 +56,7 @@ a control scheme each, bots on the ports nobody plays), M4's mission loop
 (pod drop, hold two zones, Extraction, a 75 s hold, boarding, results), M3's
 calldowns entered as directional codes, friendly fire on everything and
 reinforcements from a shared pool, and M2's swarm: waves of all three bug
-types, a shared flow field, a uniform grid, skinned bugs sharing pose slots,
+types, a shared flow field, a uniform grid, animated bugs drawn in bulk,
 and the stress bench whose hardware numbers set the enemy cap (currently 64,
 one constant: `SIM_ENEMY_CAP_DEFAULT` in `src/sim/tuning.h`).
 
@@ -463,8 +469,8 @@ FPS 29.91 frame 33.43ms max ... measured frame rate, average and worst frame tim
 CPU 5.80ms max 8.20ms sim ...   CPU busy time per frame (excludes waiting for vblank / a free framebuffer)
 SIM us pl fl en cr              sim time per frame by phase, see below
        pr cd sp
-REN us anim build sub hud       renderer CPU time: skeletons, matrices/particles, 3D submission, 2D text
-DRAWN bugs 40 skeletons 12      bugs drawn after culling; skeletons animated this frame
+REN us anim build sub hud       renderer CPU time: soldier skeletons, matrices/particles, 3D submission, 2D layer
+DRAWN bugs 40 skeletons 4       bugs drawn after culling; skeletons animated this frame (the soldiers')
 RDP 4.20ms  GPU done 7.90ms     RDP busy (hardware counter); GPU done = submit start -> RDP finished
 TICK 1234 dropped 0             sim ticks; dropped = ticks skipped because a frame ran long
 ENT P1 E3 B4 FX20 CD0  WAVE 2   players in the mission, enemies, bullets, effect particles, calldowns; wave
@@ -475,9 +481,10 @@ Sim phases: **pl** players (and the per-tick enemy list and grid), **fl** flow
 field, **en** bug AI and movement, **cr** crowd (bugs pushing apart, rock
 collision), **pr** projectiles, **cd** calldowns, **sp** spawner and camera.
 CPU time is exactly sim + anim + build + sub + hud. **sub** is issuing the 3D
-commands and **hud** drawing the 2D text and panels; both include time
-blocked on a full RSP command queue, so when they grow with the bug count
-(and *GPU done* nears 33 ms) the frame is GPU-bound.
+commands, including any time blocked on a full RSP command queue, so when it
+grows with the bug count (and *GPU done* nears 33 ms) the frame is GPU-bound.
+**hud** is recording the 2D text and panels into the frame's queue (see
+Engineering rules); it never waits on the RSP.
 
 All times are averages over the last 32 frames. The target is 33.4 ms per
 frame (the N64 runs 240p NTSC at 59.826 Hz, so 30 fps is really 29.91).
@@ -503,7 +510,7 @@ during the mission, the overlay shows `GREW!` in red and the log prints a
 `WARN heap grew` line: gameplay code must never allocate. (The menus and
 briefing may allocate; each mission starts a new baseline.)
 
-## Stress bench (M2 go/no-go)
+## Stress bench
 
 Run `hivebreakers-bench.z64` (or *Run stress bench* in the debug menu). The
 bench ROM always plays a zones mission at STANDARD, whatever the save says,
@@ -513,8 +520,13 @@ panels, the worst case), god mode, infinite ammo and max zoom, switches
 waves off, then holds the live bug count at 16, 32, 48, 64, 80, 96, 112, 128,
 160, 192, 224 and 256 in turn: a mixed swarm spawned on screen and topped up as
 the bots kill it. Each level settles for 2 s and is measured for 4 s; the HUD
-shows `BENCH 5/12: 80 BUGS`. It takes about 72 s and logs one line per level,
-then `BENCH DONE`:
+shows `BENCH 5/12: 80 BUGS`. It takes about 72 s and logs one line per level.
+Then comes a breakdown: the 96-bug level again with one part of the frame
+left out each time (nothing, the HUD, drawing the bugs, particles, the
+ground and rocks), one `BENCH skip=...` line each, then `BENCH DONE`. The
+breakdown waits for the RSP after every frame, so it runs slower, but its
+`gpu_done` is each frame's own GPU time rather than time queued behind the
+previous frame:
 
 ```
 BENCH level=48 enemies=48 drawn=46 fps=29.91 frame_avg=33429 frame_max=49645 cpu_avg=14895 cpu_max=24519 sim=3750 ph=668/1034/352/981/215/33/198 anim=2766 build=1138 submit=620 hud=6618 rdp=-1 gpu_done=15855 drop=0 proj=0 fx=0
@@ -527,10 +539,43 @@ ceiling; the enemy cap goes somewhat below it, leaving room for calldowns
 and the mission. The bench ROM plays the mission music and every sound, so
 its numbers include audio.
 
-In ares (CPU and RSP timing only), M6 holds 29.9 fps up to 64-80 bugs, and
-drops to about 25-27 at 96, where M5 held 29.5: the audio mixing and the
-extra drawing (shadows, ground detail, trails) cost about one bug level of
-headroom. The cap of 64 is unaffected; hardware decides whether it can go up.
+ares times the CPU and the RSP but draws instantly (it has no RDP timing),
+so these numbers leave out the RDP. In ares, M10 against M9:
+
+| Bugs on screen | 64 | 80 | 96 | 128 | 160 | 192 | 256 |
+|---|---|---|---|---|---|---|---|
+| fps, M9 | 29.82 | 27.53 | 24.54 | 18.86 | 14.23 | 13.28 | 9.43 |
+| fps, M10 | 29.91 | 29.91 | 29.91 | 29.90 | 24.72 | 20.83 | 13.43 |
+| CPU ms per frame, M9 | 31.4 | 34.8 | 39.3 | 51.3 | 67.9 | 72.8 | 102.9 |
+| CPU ms per frame, M10 | 12.6 | 15.2 | 16.1 | 22.6 | 38.5 | 46.5 | 72.2 |
+
+(CPU time includes any time blocked on the RSP; from 160 up M10 is
+GPU-bound, and most of its CPU time is that wait.)
+
+What changed in M10, from the breakdown:
+
+- **The HUD no longer stalls the CPU.** Its few thousand words of text
+  commands went straight into libdragon's 2 KB RSP command ring, which was
+  still full of the frame's 3D, so the CPU sat waiting (up to 20 ms a frame)
+  instead of starting the next frame's sim. The 2D layer is now recorded
+  into an rspq queue and run in one go. At 96 bugs CPU time per frame fell
+  from 39 to 16 ms.
+- **Bug animation is baked.** Skinning cost the RSP a bone matrix and a
+  vertex load per part, most of a bug's time. Each clip is now sampled once
+  per tick at boot and the mesh skinned on the CPU into a vertex buffer per
+  frame; a bug draws as a static mesh from whichever frame a segment points
+  at, with its parts' loads merged into one. RSP time per bug fell from 0.26
+  to about 0.18 ms, and animating takes no CPU (it was 3 ms a frame).
+- **Only the visible floor is drawn.** The floor is 64 chunks of 8 m with
+  their own bounds, and the renderer skips those off screen; the ground and
+  rocks went from about 5 ms of RSP time to under 2.
+
+(The breakdown's numbers move by a millisecond or two between runs, as the
+swarm differs; the per-bug cost is the difference between leaving bugs in
+and out, about 17 ms for 95 bugs.) At the cap of 64 the frame now has room
+to spare in ares: `gpu_done` about 20 ms and 13 ms of CPU time per 33 ms
+frame. Whether the cap can go up depends on the RDP, which only hardware can
+measure.
 
 ## Project layout
 
@@ -581,8 +626,15 @@ rom.mk          ROM build (called by the top-level Makefile)
   and head straight in within 4 m.
 - **Uniform grid** (2.5 m cells) for every neighbour query: bullets, bug
   separation, player shoving, bot targeting.
-- **Shared pose slots.** Bugs of a type share 7 skeletons (6 walk phases and
-  an attack); animation cost does not grow with the bug count.
+- **Baked bug animation.** Each bug type's walk and attack clips are skinned
+  on the CPU at boot into a vertex buffer per tick; a bug draws as a static
+  mesh from the frame it is on (its own walk phase, or the point it has
+  reached in its windup or recovery). No skeleton is updated per frame.
+- **The 2D layer is recorded, then run.** Each frame's HUD, menus and
+  overlay are recorded into an rspq queue (one per framebuffer, reused) and
+  run in one go, so the CPU never waits for room in the RSP command ring.
+- **Draw only what is on screen.** Bugs, props and rocks outside the
+  camera's view are skipped, and so are the floor's 8 m chunks.
 - **Explosions are cheap.** A few semi-transparent sprites (constant alpha:
   the RDP's additive blend wraps to black when it overflows, as libdragon's
   `rdpq_mode.h` warns), some opaque sparks and smoke, a one-rectangle screen
@@ -600,7 +652,8 @@ soldier's accents are white with vertex alpha 0; the renderer's combiner puts
 each player's colour there, so all four share one mesh. Blob shadows are
 one shared disc model (`shadow`) drawn under soldiers, falling pods and
 drops, and the dropship;
-the bugs carry theirs in their own mesh. To replace
+the bugs carry theirs in their own mesh. The floor is generated in 8 m
+chunks, each its own mesh, so the game draws only the chunks on screen. To replace
 one with a Blender/Fast64 export, drop `assets/models/<name>.glb` in place;
 see `assets/models/README.md` for the export rules and the per-bug triangle,
 vertex and bone budgets.

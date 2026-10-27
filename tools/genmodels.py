@@ -188,6 +188,7 @@ def mirror_x(tris):
 class Model:
     def __init__(self):
         self.tris = []    # ((p0, p1, p2), rgb, bone, smooth group or -1)
+        self.chunks = []  # per triangle: the mesh it goes in (see build_glb)
         self.bones = []   # (name, parent index or -1, pivot in model space)
         self.anims = {}   # name -> (duration, [(bone, "rotation"|"translation", [(t, value)])])
         self.groups = 0
@@ -197,13 +198,17 @@ class Model:
         self.bones.append((name, parent, pivot))
         return len(self.bones) - 1
 
-    def add(self, tris, bone=0, smooth=False):
-        """smooth: the triangles of this call share averaged normals."""
+    def add(self, tris, bone=0, smooth=False, chunk=0):
+        """smooth: the triangles of this call share averaged normals.
+        chunk: a static model can be split into several meshes, which the
+        importer makes separate objects with their own bounds, so the game
+        can skip the ones off screen."""
         group = -1
         if smooth:
             group = self.groups
             self.groups += 1
         self.tris += [(pts, col, bone, group) for pts, col in tris]
+        self.chunks += [chunk] * len(tris)
 
 
 def q_axis(axis, angle):
@@ -636,7 +641,9 @@ def arena_floor(biome="dust"):
     smooth colour variation (darker soil, sand and rusty patches on dust)
     so movement reads on screen, a darker outer ring marking the edge, and
     scattered tufts and pebbles. Matches ARENA_HALF_SIZE in src/sim/tuning.h.
-    The same layout for every biome, in its colours."""
+    The same layout for every biome, in its colours. Split into 8 m square
+    chunks (GROUND_CHUNK in src/n64/render.c) so only those on screen are
+    drawn."""
     pal = BIOMES[biome]
     rnd = random.Random(99)
     half, tile = 32.0, 4.0
@@ -687,7 +694,16 @@ def arena_floor(biome="dust"):
         shade = tuple(min(255, int(v * rnd.uniform(0.85, 1.1))) for v in pal["pebble"])
         for k in range(3):
             tris.append(((base[k], base[(k + 1) % 3], top), shade))
-    return tris
+    m = Model()
+    size = 8.0
+    per_row = int(2 * half / size)
+    for t in tris:
+        cx = sum(p[0] for p in t[0]) / 3
+        cz = sum(p[2] for p in t[0]) / 3
+        ix = min(per_row - 1, max(0, int((cx + half) // size)))
+        iz = min(per_row - 1, max(0, int((cz + half) // size)))
+        m.add([t], 0, chunk=iz * per_row + ix)
+    return m
 
 
 MODELS = {
@@ -802,42 +818,55 @@ def build_glb(name, model):
         for p in (p0, p1, p2):
             smooth[key(p, group)] = v_add(smooth.get(key(p, group), (0.0, 0.0, 0.0)), n)
 
-    positions, normals, colors, joints = [], [], [], []
-    for (p0, p1, p2), col, bone, group in tris:
-        face = v_norm(v_cross(v_sub(p1, p0), v_sub(p2, p0)))
-        # A colour per triangle, or (c0, c1, c2) per vertex.
-        per_vertex = isinstance(col[0], (tuple, list))
-        for k, p in enumerate((p0, p1, p2)):
-            c = col[k] if per_vertex else col
-            positions.append(p)
-            normals.append(v_norm(smooth[key(p, group)]) if group >= 0 else face)
-            colors.append([srgb_to_linear(v) for v in c[:3]] + [c[3] / 255.0 if len(c) > 3 else 1.0])
-            joints.append(bone)
-    count = len(positions)
-    if count > 65535:
-        raise ValueError(f"{name}: too many vertices ({count})")
-
     w = GlbWriter()
     VEC_ARRAY, INDEX_ARRAY, FLOAT, UBYTE, USHORT = 34962, 34963, 5126, 5121, 5123
-    attrs = {
-        "POSITION": w.accessor(b"".join(struct.pack("<3f", *p) for p in positions), FLOAT, count, "VEC3",
-                               VEC_ARRAY, [min(p[k] for p in positions) for k in range(3)],
-                               [max(p[k] for p in positions) for k in range(3)]),
-        "NORMAL": w.accessor(b"".join(struct.pack("<3f", *n) for n in normals), FLOAT, count, "VEC3", VEC_ARRAY),
-        "COLOR_0": w.accessor(b"".join(struct.pack("<4f", *c) for c in colors), FLOAT, count, "VEC4", VEC_ARRAY),
-    }
-    if bones:
-        attrs["JOINTS_0"] = w.accessor(b"".join(struct.pack("<4B", j, 0, 0, 0) for j in joints),
-                                       UBYTE, count, "VEC4", VEC_ARRAY)
-        attrs["WEIGHTS_0"] = w.accessor(struct.pack("<4f", 1, 0, 0, 0) * count, FLOAT, count, "VEC4", VEC_ARRAY)
-    indices = w.accessor(b"".join(struct.pack("<H", i) for i in range(count)), USHORT, count, "SCALAR", INDEX_ARRAY)
 
-    nodes = [{"name": name, "mesh": 0}]
-    scene_nodes = [0]
+    def mesh(mesh_name, mesh_tris):
+        positions, normals, colors, joints = [], [], [], []
+        for (p0, p1, p2), col, bone, group in mesh_tris:
+            face = v_norm(v_cross(v_sub(p1, p0), v_sub(p2, p0)))
+            # A colour per triangle, or (c0, c1, c2) per vertex.
+            per_vertex = isinstance(col[0], (tuple, list))
+            for k, p in enumerate((p0, p1, p2)):
+                c = col[k] if per_vertex else col
+                positions.append(p)
+                normals.append(v_norm(smooth[key(p, group)]) if group >= 0 else face)
+                colors.append([srgb_to_linear(v) for v in c[:3]] + [c[3] / 255.0 if len(c) > 3 else 1.0])
+                joints.append(bone)
+        count = len(positions)
+        if count > 65535:
+            raise ValueError(f"{mesh_name}: too many vertices ({count})")
+        attrs = {
+            "POSITION": w.accessor(b"".join(struct.pack("<3f", *p) for p in positions), FLOAT, count, "VEC3",
+                                   VEC_ARRAY, [min(p[k] for p in positions) for k in range(3)],
+                                   [max(p[k] for p in positions) for k in range(3)]),
+            "NORMAL": w.accessor(b"".join(struct.pack("<3f", *n) for n in normals), FLOAT, count, "VEC3",
+                                 VEC_ARRAY),
+            "COLOR_0": w.accessor(b"".join(struct.pack("<4f", *c) for c in colors), FLOAT, count, "VEC4",
+                                  VEC_ARRAY),
+        }
+        if bones:
+            attrs["JOINTS_0"] = w.accessor(b"".join(struct.pack("<4B", j, 0, 0, 0) for j in joints),
+                                           UBYTE, count, "VEC4", VEC_ARRAY)
+            attrs["WEIGHTS_0"] = w.accessor(struct.pack("<4f", 1, 0, 0, 0) * count, FLOAT, count, "VEC4",
+                                            VEC_ARRAY)
+        indices = w.accessor(b"".join(struct.pack("<H", i) for i in range(count)), USHORT, count, "SCALAR",
+                             INDEX_ARRAY)
+        return {"name": mesh_name, "primitives": [{"attributes": attrs, "indices": indices, "material": 0}]}
+
+    # One mesh (and node) per chunk; most models have just the one.
+    chunk_ids = sorted(set(model.chunks))
+    assert len(chunk_ids) == 1 or not bones, f"{name}: a rigged model can't be split into chunks"
+    meshes = []
+    for c in chunk_ids:
+        mesh_name = name if len(chunk_ids) == 1 else f"{name}_{c}"
+        meshes.append(mesh(mesh_name, [t for t, tc in zip(tris, model.chunks) if tc == c]))
+    nodes = [{"name": m["name"], "mesh": i} for i, m in enumerate(meshes)]
+    scene_nodes = list(range(len(nodes)))
     gltf = {
         "asset": {"version": "2.0", "generator": "hivebreakers genmodels.py"},
         "scene": 0,
-        "meshes": [{"name": name, "primitives": [{"attributes": attrs, "indices": indices, "material": 0}]}],
+        "meshes": meshes,
         "materials": [fast64_material(name + "_mat")],
     }
 

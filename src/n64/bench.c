@@ -10,10 +10,24 @@ static const uint16_t LEVELS[] = { 16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 2
 #define SETTLE       60   // frames before measuring each level
 #define MEASURE      120  // frames measured per level
 #define TOPUP_MAX    8    // bugs spawned per frame while filling up
+#define BREAKDOWN_LEVEL 5 // LEVELS[5] = 96 bugs
+
+static const struct {
+    const char *name;
+    uint32_t mask;
+} VARIANTS[] = {
+    { "none", 0 },
+    { "hud", BENCH_SKIP_HUD },
+    { "bugs", BENCH_SKIP_BUGS },
+    { "particles", BENCH_SKIP_PARTICLES },
+    { "world", BENCH_SKIP_WORLD },
+};
+#define VARIANT_COUNT (int)(sizeof(VARIANTS) / sizeof(VARIANTS[0]))
 
 static struct {
     bool active;
     int level;
+    int variant;         // -1 during the level sweep, then the breakdown's
     int frame;           // frames into the current level
     uint32_t drop_start; // dropped-tick counter when measuring began
     // Sums (and maxima) over the measured frames.
@@ -45,6 +59,7 @@ void bench_start(sim_t *sim)
     sim_set_bots(sim, true);
     b.active = true;
     b.level = 0;
+    b.variant = -1;
     b.frame = 0;
     reset_sums();
     debugf("BENCH START build=%s levels=%d settle=%d measure=%d frames\n",
@@ -59,6 +74,11 @@ bool bench_active(void)
 const char *bench_status(void)
 {
     return b.active ? b.status : NULL;
+}
+
+uint32_t bench_skip(void)
+{
+    return b.active && b.variant >= 0 ? VARIANTS[b.variant].mask | BENCH_SERIAL : 0;
 }
 
 static unsigned long avg(uint64_t sum, uint32_t n)
@@ -76,10 +96,13 @@ static void report(const tickclock_t *clock)
     overlay_format_phases(ph, sizeof(ph), phase_avg);
     unsigned long fa = avg(b.frame_us, n);
     unsigned long fps100 = fa ? 100000000ul / fa : 0;
-    debugf("BENCH level=%u enemies=%lu drawn=%lu fps=%lu.%02lu frame_avg=%lu frame_max=%lu "
+    char skip[24] = "";
+    if (b.variant >= 0)
+        snprintf(skip, sizeof(skip), "skip=%s ", VARIANTS[b.variant].name);
+    debugf("BENCH %slevel=%u enemies=%lu drawn=%lu fps=%lu.%02lu frame_avg=%lu frame_max=%lu "
            "cpu_avg=%lu cpu_max=%lu sim=%lu ph=%s anim=%lu build=%lu submit=%lu hud=%lu "
            "rdp=%ld gpu_done=%ld drop=%lu proj=%lu fx=%lu\n",
-           LEVELS[b.level], avg(b.enemies, n), avg(b.drawn, n), fps100 / 100, fps100 % 100,
+           skip, LEVELS[b.level], avg(b.enemies, n), avg(b.drawn, n), fps100 / 100, fps100 % 100,
            fa, (unsigned long)b.frame_max, avg(b.cpu_us, n), (unsigned long)b.cpu_max, avg(b.sim_us, n), ph,
            avg(b.anim_us, n), avg(b.build_us, n), avg(b.submit_us, n), avg(b.hud_us, n),
            b.rdp_n ? (long)avg(b.rdp_us, b.rdp_n) : -1L, b.gpu_n ? (long)avg(b.gpu_us, b.gpu_n) : -1L,
@@ -130,12 +153,21 @@ void bench_frame(sim_t *sim, const frame_timing_t *t, const tickclock_t *clock)
             b.gpu_n++;
         }
     }
-    snprintf(b.status, sizeof(b.status), "BENCH %d/%d: %d BUGS", b.level + 1, LEVEL_COUNT, want);
+    if (b.variant < 0)
+        snprintf(b.status, sizeof(b.status), "BENCH %d/%d: %d BUGS", b.level + 1, LEVEL_COUNT, want);
+    else
+        snprintf(b.status, sizeof(b.status), "BENCH %d BUGS, NO %s", want, VARIANTS[b.variant].name);
 
     if (++b.frame >= SETTLE + MEASURE) {
         report(clock);
         b.frame = 0;
-        if (++b.level >= LEVEL_COUNT) {
+        if (b.variant < 0 && ++b.level < LEVEL_COUNT)
+            return;
+        // The breakdown: the same level once per variant, from a fresh swarm
+        // (the sweep ends with more bugs than that).
+        b.level = BREAKDOWN_LEVEL;
+        sim_kill_all_enemies(sim);
+        if (++b.variant >= VARIANT_COUNT) {
             b.active = false;
             debugf("BENCH DONE\n");
         }

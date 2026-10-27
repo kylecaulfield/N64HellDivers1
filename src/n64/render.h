@@ -12,17 +12,11 @@
 // Tiny3D importer default), so model matrices scale by WORLD_SCALE / 64.
 #define WORLD_SCALE 16.0f
 
-// Bugs of a type share this many skeletons ("pose slots"): walk cycles at
-// evenly spread phases, plus one attack pose. Animation cost is per slot,
-// not per bug.
-#define WALK_SLOTS 6
-#define POSE_SLOTS (WALK_SLOTS + 1)
-
 typedef struct {
     uint32_t anim_us;     // skeleton/animation updates
     uint32_t build_us;    // matrices and particle buffers
     uint16_t drawn_bugs;  // after culling
-    uint16_t skeletons;   // skeletons updated this frame
+    uint16_t skeletons;   // skeletons updated this frame (the soldiers'; bug clips are baked)
 } render_stats_t;
 
 // Loads every model; `progress` (may be NULL) is called after each one.

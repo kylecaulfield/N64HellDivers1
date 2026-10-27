@@ -45,7 +45,9 @@ typedef struct {
 } sim_input_t;
 
 typedef enum { SCHEME_A, SCHEME_B, SCHEME_COUNT } control_scheme_t;
-typedef enum { WEAPON_RIFLE, WEAPON_SHOTGUN, WEAPON_MACHINE_GUN, WEAPON_COUNT } weapon_type_t;
+// The machine gun and the grenade launcher are support weapons, from
+// calldowns only; the launcher's rounds explode.
+typedef enum { WEAPON_RIFLE, WEAPON_SHOTGUN, WEAPON_MACHINE_GUN, WEAPON_LAUNCHER, WEAPON_COUNT } weapon_type_t;
 typedef enum { ENEMY_SKITTER, ENEMY_GNASHER, ENEMY_BULWARK, ENEMY_TYPE_COUNT } enemy_type_t;
 
 // What the squad drops in to do before it can call extraction (mission.h).
@@ -93,9 +95,20 @@ typedef enum {
     CALLDOWN_AIRSTRIKE,
     CALLDOWN_BARRAGE,
     CALLDOWN_SENTRY,
+    CALLDOWN_MINEFIELD,
+    CALLDOWN_LAUNCHER,    // grenade launcher case
+    CALLDOWN_NAPALM,
     CALLDOWN_EXTRACTION,  // once the objective is done, from inside the LZ
     CALLDOWN_COUNT
 } calldown_type_t;
+
+// Each player takes LOADOUT_SLOTS calldowns into a mission, picked before
+// the drop; Reinforce, Resupply and Extraction come with everyone.
+#define LOADOUT_SLOTS 4
+// What a new save (and every bot) takes.
+static const uint8_t LOADOUT_DEFAULT[LOADOUT_SLOTS] = {
+    CALLDOWN_MACHINE_GUN, CALLDOWN_AIRSTRIKE, CALLDOWN_SENTRY, CALLDOWN_BARRAGE,
+};
 
 // Code inputs: the C-buttons while R is held. 0 = no input.
 typedef enum { CODE_NONE, CODE_UP, CODE_DOWN, CODE_LEFT, CODE_RIGHT } code_input_t;
@@ -131,10 +144,11 @@ typedef struct {
     vec2     dir;    // the thrower's facing (an airstrike flies along it)
 } beacon_t;
 
-// Explosions spread over time: an airstrike's bombs or a barrage's shells.
+// Explosions spread over time: an airstrike's bombs, a barrage's shells or
+// napalm along a line.
 typedef struct {
     bool     active;
-    uint8_t  type;   // CALLDOWN_AIRSTRIKE or CALLDOWN_BARRAGE
+    uint8_t  type;   // CALLDOWN_AIRSTRIKE, CALLDOWN_BARRAGE or CALLDOWN_NAPALM
     uint8_t  owner;
     uint8_t  done;   // explosions so far
     uint16_t timer;  // ticks to the next one
@@ -153,7 +167,7 @@ typedef struct {
     vec2     facing;
 } turret_t;
 
-typedef enum { PICKUP_RESUPPLY, PICKUP_MACHINE_GUN } pickup_type_t;
+typedef enum { PICKUP_RESUPPLY, PICKUP_MACHINE_GUN, PICKUP_LAUNCHER } pickup_type_t;
 
 typedef struct {
     bool     active;
@@ -162,6 +176,22 @@ typedef struct {
     uint16_t life;   // ticks left
     vec2     pos;
 } pickup_t;
+
+// A mine from a minefield: goes off when a bug steps close.
+typedef struct {
+    bool     active;
+    uint8_t  owner;
+    uint16_t life;   // ticks left; it arms MINE_ARM_TICKS after landing
+    vec2     pos;
+} mine_t;
+
+// A patch of burning napalm: hurts whatever stands in it, bugs and troopers.
+typedef struct {
+    bool     active;
+    uint8_t  owner;
+    uint16_t life;   // ticks left
+    vec2     pos;
+} fire_t;
 
 // Projectile owners: players 0-3, or a sentry turret.
 #define OWNER_TURRET 0x80   // | turret index
@@ -420,6 +450,9 @@ typedef enum {
     BLAST_IMPACT,   // something dropped from orbit landed
     BLAST_BOMB,     // airstrike
     BLAST_SHELL,    // orbital barrage
+    BLAST_MINE,
+    BLAST_GRENADE,  // grenade launcher round
+    BLAST_NAPALM,   // napalm canister bursting (it leaves a fire)
 } blast_kind_t;
 
 // EV_HIT_ENEMY: `a` = enemy type, plus this flag when armor absorbed the hit.
@@ -439,6 +472,7 @@ typedef struct {
     uint8_t  difficulty;              // 0..DIFFICULTY_COUNT-1, for the next mission
     uint8_t  objective;               // objective_type_t, for the next mission
     uint8_t  biome;                   // biome_t, for the renderer (the sim ignores it)
+    uint8_t  loadout[SIM_MAX_PLAYERS][LOADOUT_SLOTS]; // calldown_type_t each port takes
     bool     god_mode;
     bool     infinite_ammo;
     bool     waves;                   // wave spawner on
@@ -493,6 +527,8 @@ typedef struct {
     strike_t       strikes[SIM_MAX_STRIKES];
     turret_t       turrets[SIM_MAX_TURRETS];
     pickup_t       pickups[SIM_MAX_PICKUPS];
+    mine_t         mines[SIM_MAX_MINES];
+    fire_t         fires[SIM_MAX_FIRES];
     uint16_t       cooldowns[SIM_MAX_PLAYERS][CALLDOWN_COUNT]; // kept through death
     uint8_t        humans;            // bit per port a person is playing (port 1 always)
     uint8_t        reinforcements;    // shared pool

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "calldown.h"
 #include "difficulty.h"
 #include "overlay.h"
 #include "palette.h"
@@ -256,6 +257,66 @@ void frontend_sector(const campaign_t *c, int selected, uint32_t frames)
     rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM }, FONT, 0, 216,
                      "%s", campaign_complete(c) ? "SECTOR LIBERATED!  A: DEPLOY  B: BACK"
                                                 : "LEFT/RIGHT: PLANET   A: DEPLOY   B: BACK");
+}
+
+// A calldown's code as arrows, space-separated ("^" written "^^" for rdpq_text).
+static void code_arrows(char *buf, int n, calldown_type_t type)
+{
+    static const char *const ARROW[] = { [CODE_UP] = "^^", [CODE_DOWN] = "v", [CODE_LEFT] = "<", [CODE_RIGHT] = ">" };
+    const calldown_def_t *d = &calldown_defs[type];
+    int at = 0;
+    buf[0] = 0;
+    for (int k = 0; k < d->code_len && at < n - 4; k++)
+        at += snprintf(buf + at, (size_t)(n - at), "%s%s", k ? " " : "", ARROW[d->code[k]]);
+}
+
+void frontend_loadout(const sim_t *sim, const campaign_t *c, const int cursor[SIM_MAX_PLAYERS], uint8_t connected,
+                      uint32_t frames)
+{
+    ui_stars(frames);
+    ui_heading(30, STYLE_TITLE, "LOADOUT");
+    rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM }, FONT, 0, 46,
+                     "EVERYONE: REINFORCE  RESUPPLY  EXTRACTION");
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        int x = 10 + i * 76, y = 62;
+        bool human = sim->humans & (1u << i), plugged = connected & (1u << i);
+        const uint8_t *col = PLAYER_RGB[i];
+        rdpq_set_mode_fill(human ? RGBA32(col[0], col[1], col[2], 0xFF) : RGBA32(50, 50, 58, 0xFF));
+        rdpq_fill_rectangle(x, y, x + 72, y + 2);
+        const char *who = human ? "" : plugged ? ((frames / 15) % 2 ? "PUSH START" : "") : sim->settings.bots ? "AI" : "-";
+        rdpq_text_printf(&(rdpq_textparms_t){ .style_id = (int16_t)(human || sim->settings.bots ? STYLE_P1 + i : STYLE_DIM) },
+                         FONT, x, y + 14, "P%d %s", i + 1, who);
+        if (!human && !sim->settings.bots)
+            continue;
+        for (int k = 0; k < LOADOUT_SLOTS; k++) {
+            int sy = y + 30 + k * 27;
+            calldown_type_t t = (calldown_type_t)sim->settings.loadout[i][k];
+            bool sel = human && cursor[i] == k;
+            if (sel) {
+                rdpq_set_mode_fill(RGBA32(0xE8, 0x96, 0x28, 0xFF));
+                rdpq_fill_rectangle(x - 2, sy - 11, x + 74, sy + 13);
+                rdpq_set_fill_color(RGBA32(10, 12, 18, 0xFF));
+                rdpq_fill_rectangle(x - 1, sy - 10, x + 73, sy + 12);
+            }
+            char code[32];
+            code_arrows(code, sizeof(code), t);
+            const calldown_def_t *d = &calldown_defs[t];
+            rdpq_text_printf(&(rdpq_textparms_t){ .style_id = (int16_t)(sel ? STYLE_TITLE : human ? STYLE_NORMAL : STYLE_DIM) },
+                             FONT, x, sy, "%s", d->name);
+            rdpq_text_printf(&(rdpq_textparms_t){ .style_id = STYLE_DIM }, FONT, x, sy + 10, "%s", code);
+        }
+    }
+    int locked = 0;
+    for (int t = 0; t < CALLDOWN_COUNT; t++)
+        locked += campaign_reward_planet((calldown_type_t)t) >= 0 && !campaign_unlocked(c, (calldown_type_t)t);
+    if (locked)
+        rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM }, FONT, 0, 202,
+                         "LIBERATE PLANETS TO UNLOCK %d MORE", locked);
+    rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_DIM }, FONT, 0, 214,
+                     "UP/DOWN SLOT  LEFT/RIGHT CHANGE  B BACK");
+    if ((frames / 20) % 3 != 2)
+        rdpq_text_printf(&(rdpq_textparms_t){ .width = 320, .align = ALIGN_CENTER, .style_id = STYLE_TITLE }, FONT, 0, 226,
+                         "P1: START TO DROP");
 }
 
 void frontend_credits(void)

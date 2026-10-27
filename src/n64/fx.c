@@ -154,10 +154,13 @@ void fx_spawn_from_events(const sim_t *s)
             burst(e->pos, 0.8f, 14, 1.5f, 4.0f, 16, 26, 40, BLOOD, 2);
             break;
         case EV_EXPLOSION:
-            if (e->a == BLAST_IMPACT)
+            if (e->a == BLAST_IMPACT) {
                 impact(s, e->pos);
-            else
+            } else {
                 explosion(s, e->pos, e->a == BLAST_BOMB);
+                if (e->a == BLAST_NAPALM) // burning gel flung out
+                    burst(e->pos, 0.4f, 10, 2.0f, 5.0f, 10, 20, 34, FIRE, 3);
+            }
             break;
         case EV_NEST_HIT:
             burst(e->pos, 1.0f, 2, 1.5f, 3.5f, 6, 10, 24, ICHOR, 2);

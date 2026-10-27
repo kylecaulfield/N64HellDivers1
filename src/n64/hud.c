@@ -46,7 +46,7 @@ static void put_field(char *buf, int n, int *at, int *cur, int style, const char
 // What a port's panel says under its label.
 static const char *panel_status(const sim_t *sim, int idx, bool connected, char *buf, int n)
 {
-    static const char *const SHORT[WEAPON_COUNT] = { "RIF", "SHG", "MG" };
+    static const char *const SHORT[WEAPON_COUNT] = { "RIF", "SHG", "MG", "GL" };
     const player_t *p = &sim->players[idx];
     bool human = sim->humans & (1u << idx);
     if (!human && !p->bot)
@@ -149,10 +149,16 @@ static void code_panel(const sim_t *sim, int idx)
     const player_t *p = &sim->players[idx];
     if (!sim_player_alive(p) || !p->code.entering || !(sim->humans & (1u << idx))) // bots enter codes too
         return;
+    // Rows: what everyone brings, then their loadout, then Extraction.
+    enum { ROWS = 3 + LOADOUT_SLOTS };
+    uint8_t rows[ROWS] = { CALLDOWN_REINFORCE, CALLDOWN_RESUPPLY };
+    for (int k = 0; k < LOADOUT_SLOTS; k++)
+        rows[2 + k] = sim->settings.loadout[idx][k];
+    rows[ROWS - 1] = CALLDOWN_EXTRACTION;
     const int lh = 10, w = 24 * CW;
-    const int x = idx % 2 ? 320 - 10 - w : 10, y0 = idx < 2 ? 43 : 43 + (CALLDOWN_COUNT + 1) * lh + 4;
+    const int x = idx % 2 ? 320 - 10 - w : 10, y0 = idx < 2 ? 43 : 43 + (ROWS + 1) * lh + 4;
     rdpq_set_mode_fill(RGBA32(10, 12, 18, 0xFF));
-    rdpq_fill_rectangle(x - 4, y0 - 10, x + w + 2, y0 + CALLDOWN_COUNT * lh + 4);
+    rdpq_fill_rectangle(x - 4, y0 - 10, x + w + 2, y0 + ROWS * lh + 4);
 
     char text[512], code[64];
     int at = 0;
@@ -160,7 +166,8 @@ static void code_panel(const sim_t *sim, int idx)
     at += snprintf(text + at, sizeof(text) - (size_t)at, "^%02XP%d CALLDOWN  %s", STYLE_P1 + idx, idx + 1, code);
     const mission_t *m = &sim->mission;
     bool terminal_row = m->objective == OBJ_UPLOAD && m->phase <= MISSION_OBJECTIVE;
-    for (int t = 0; t < CALLDOWN_COUNT && at < (int)sizeof(text) - 64; t++) {
+    for (int r = 0; r < ROWS && at < (int)sizeof(text) - 64; r++) {
+        int t = rows[r] < CALLDOWN_COUNT ? rows[r] : CALLDOWN_RESUPPLY;
         if (t == CALLDOWN_EXTRACTION && terminal_row) {
             const upload_t *u = &m->upload;
             bool open = mission_terminal_open(sim, idx), out;

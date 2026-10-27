@@ -22,7 +22,8 @@ typedef struct {
     uint8_t version;
     uint8_t difficulty;               // the last one picked on the briefing
     uint8_t planet;                   // the last one picked on the sector map
-    uint8_t reserved[22];             // room to grow without moving the files
+    uint8_t loadout[SIM_MAX_PLAYERS][LOADOUT_SLOTS]; // each port's calldowns
+    uint8_t reserved[6];              // room to grow without moving the files
 } settings_t;
 
 void save_init(void);

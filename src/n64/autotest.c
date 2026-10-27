@@ -18,13 +18,14 @@
 #define F_PAUSE       870
 #define F_UNPAUSE     930
 #define F_CALLDOWNS   1050  // MG, sentry, airstrike, barrage, resupply codes
-#define F_PICKUPS     1200  // walk to the MG case, then the crate
-#define F_DIE         1350  // solo death: emergency reinforce after 5 s
-#define F_BOTS        1520  // bots on; one dies and another reinforces it
-#define F_JOIN        1720  // bots off; controller 2 plugs in, joins by pod and fights
-#define F_TAKEOVER    1800  // bots on; controller 4 joins (takes over its bot), then unplugs
-#define F_MISSION     1900  // quick mission with P2: both zones, extraction, results, new mission
-#define F_DEADLINE    6200  // FAIL if the mission loop hasn't finished by now
+#define F_NEWCALLS    1150  // a new loadout: minefield, napalm, grenade launcher
+#define F_PICKUPS     1250  // walk to the MG case, the crate, the launcher case; fire grenades
+#define F_DIE         1500  // solo death: emergency reinforce after 5 s
+#define F_BOTS        1670  // bots on; one dies and another reinforces it
+#define F_JOIN        1870  // bots off; controller 2 plugs in, joins by pod and fights
+#define F_TAKEOVER    1950  // bots on; controller 4 joins (takes over its bot), then unplugs
+#define F_MISSION     2050  // quick mission with P2: both zones, extraction, results, new mission
+#define F_DEADLINE    6350  // FAIL if the mission loop hasn't finished by now
 #define BOT_DEADLINE  9000  // frames for each bot-played mission (nests, upload)
 
 static const struct {
@@ -36,6 +37,9 @@ static const struct {
     { F_CALLDOWNS + 40,  CALLDOWN_AIRSTRIKE },
     { F_CALLDOWNS + 60,  CALLDOWN_BARRAGE },
     { F_CALLDOWNS + 80,  CALLDOWN_RESUPPLY },
+    { F_NEWCALLS + 2,    CALLDOWN_MINEFIELD },
+    { F_NEWCALLS + 22,   CALLDOWN_NAPALM },
+    { F_NEWCALLS + 42,   CALLDOWN_LAUNCHER },
 };
 static const uint16_t CODE_BTN[] = {
     [CODE_UP] = SIM_BTN_CUP, [CODE_DOWN] = SIM_BTN_CDOWN,
@@ -58,6 +62,8 @@ static char part1[400];
 static uint8_t success_mask; // bit per objective_type_t completed with extraction
 static uint32_t nests_destroyed, stages_done, uploads_started;
 static uint8_t first_difficulty = 0xFF;
+static uint32_t most_mines, most_fires, grenades;
+static bool launcher_seen, loadout_seen;
 
 static void phase(uint32_t frame, const char *name, const sim_t *sim);
 
@@ -106,10 +112,14 @@ static void final_verdict(void)
     // Three STANDARD successes on the first planet: 25% each.
     unsigned liberation = save_campaign()->liberation[0];
     bool m8 = (fe_seen & (1u << SCREEN_SECTOR)) && liberation == 75;
+    bool m9 = loadout_seen && most_mines >= MINE_COUNT && most_fires >= NAPALM_PATCHES && launcher_seen &&
+              grenades >= 1;
     debugf("AUTOTEST %s: %s | objectives: success mask %x, nests destroyed %lu, uploads %lu, stages %lu, "
-           "first mission level %u | campaign: planet 1 at %u%%\n",
-           part1_ok && m7 && m8 ? "PASS" : "FAIL", part1, success_mask, (unsigned long)nests_destroyed,
-           (unsigned long)uploads_started, (unsigned long)stages_done, first_difficulty, liberation);
+           "first mission level %u | campaign: planet 1 at %u%% | loadout: screen %d, mines %lu, fires %lu, "
+           "launcher %d, grenades %lu\n",
+           part1_ok && m7 && m8 && m9 ? "PASS" : "FAIL", part1, success_mask, (unsigned long)nests_destroyed,
+           (unsigned long)uploads_started, (unsigned long)stages_done, first_difficulty, liberation, loadout_seen,
+           (unsigned long)most_mines, (unsigned long)most_fires, launcher_seen, (unsigned long)grenades);
 }
 
 static int nearest_enemy(const sim_t *sim, vec2 from)
@@ -213,9 +223,17 @@ void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf,
     in->pressed_any = 0;
     in->toggle_menu = false;
     fe_seen |= (uint16_t)(1u << screen);
+    static bool fresh;
+    if (!fresh) {
+        // The checks assume a fresh campaign; an earlier run's (or a run cut
+        // short) is still in the emulator's EEPROM.
+        save_reset_campaign();
+        fresh = true;
+    }
     static int last_screen = -1;
     static const char *const NAMES[] = {
         "splash", "title", "menu", "options", "credits", "high scores", "briefing", "mission", "initials", "sector",
+        "loadout",
     };
     if ((int)screen != last_screen) {
         debugf("AUTOTEST front end: %s\n", NAMES[screen]);
@@ -238,6 +256,17 @@ void autotest_input(input_frame_t *in, sim_t *sim, screen_t screen, uint32_t sf,
     case SCREEN_SECTOR:
         if (sf == 20 && !verdict)
             p->pressed = SIM_BTN_A; // the first planet, the only one open on a fresh save
+        break;
+    case SCREEN_LOADOUT:
+        // Down a slot and try to change it (on a fresh save everything
+        // unlocked is already taken, so it stays), then drop.
+        loadout_seen = true;
+        if (sf == 10)
+            p->pressed = SIM_BTN_DDOWN;
+        if (sf == 16)
+            p->pressed = SIM_BTN_DRIGHT;
+        if (sf == 30 && !verdict)
+            p->pressed = SIM_BTN_START;
         break;
     case SCREEN_BRIEFING:
         // A fresh save starts on the easiest level: step it to STANDARD
@@ -362,17 +391,29 @@ static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p
     } else if (frame < F_PICKUPS) {
         if (frame == F_CALLDOWNS)
             phase(frame, "calldowns: machine gun, sentry, airstrike, barrage, resupply", sim);
+        if (frame == F_NEWCALLS) {
+            // A loadout the fresh save hasn't unlocked yet (the sim only
+            // checks what the port brings).
+            phase(frame, "new loadout: minefield, napalm, grenade launcher", sim);
+            static const uint8_t NEW[LOADOUT_SLOTS] = { CALLDOWN_MINEFIELD, CALLDOWN_NAPALM, CALLDOWN_LAUNCHER,
+                                                        CALLDOWN_SENTRY };
+            for (int k = 0; k < LOADOUT_SLOTS; k++)
+                sim->settings.loadout[0][k] = NEW[k];
+        }
         for (unsigned i = 0; i < sizeof(CALLS) / sizeof(CALLS[0]); i++)
             if (code_script(p, frame, CALLS[i].frame, CALLS[i].type))
                 break;
     } else if (frame < F_DIE) {
         if (frame == F_PICKUPS)
-            phase(frame, "walk to the machine gun case, then the resupply crate", sim);
+            phase(frame, "walk to the machine gun case, the resupply crate, the launcher case", sim);
         if (frame == F_PICKUPS + 60) // empty the rifle's reserve so the crate has work
             sim->players[0].weapons[0].reserve = 0;
-        int k = find_pickup(sim, mg_seen ? PICKUP_RESUPPLY : PICKUP_MACHINE_GUN);
+        bool crate_done = pickups >= 2; // the MG case, then the crate (which stays for others)
+        int k = find_pickup(sim, !mg_seen ? PICKUP_MACHINE_GUN : !crate_done ? PICKUP_RESUPPLY : PICKUP_LAUNCHER);
         if (k >= 0 && sim_player_alive(me))
             stick_towards(p, v2_sub(sim->pickups[k].pos, me->pos));
+        else if (launcher_seen && me->weapons[me->weapon].type == WEAPON_LAUNCHER)
+            p->held = cbuttons_towards(v2_norm_or(to, v2(0.0f, 1.0f))); // fire grenades
     } else if (frame < F_BOTS) {
         if (frame == F_DIE) {
             phase(frame, "P1 dies alone: emergency reinforce", sim);
@@ -469,8 +510,8 @@ static void mission_script(input_frame_t *in, uint32_t frame, sim_t *sim, bool p
         // player 2 in it, as a person.
         const player_t *q = &sim->players[1];
         p2_next_mission = q->active && !q->bot && (sim->humans & 2);
-        bool m3 = m3_kills >= 5 && shots_seen > 50 && shotgun_seen && m3_wave >= 1 && throws >= 5 && mg_seen &&
-                  turret_shots > 0 && bombs >= AIRSTRIKE_BOMBS && shells >= BARRAGE_SHELLS / 2 && pickups >= 2 &&
+        bool m3 = m3_kills >= 5 && shots_seen > 50 && shotgun_seen && m3_wave >= 1 && throws >= 8 && mg_seen &&
+                  turret_shots > 0 && bombs >= AIRSTRIKE_BOMBS && shells >= BARRAGE_SHELLS / 2 && pickups >= 3 &&
                   p1_reinforced && bot_reinforced && m3_reinforcements == REINFORCE_POOL - 2;
         bool m4 = zones_captured == difficulty_defs[DIFFICULTY_STANDARD].zones && hold_seen && success_seen &&
                   extracted >= 1 && new_mission && !mission_over(sim);
@@ -502,7 +543,11 @@ void autotest_observe(const sim_t *sim)
         case EV_SHOT:          shots_seen++; break;
         case EV_BEACON_THROWN: throws++; break;
         case EV_PICKUP:        pickups++; break;
-        case EV_EXPLOSION:     bombs += e->a == BLAST_BOMB; shells += e->a == BLAST_SHELL; break;
+        case EV_EXPLOSION:
+            bombs += e->a == BLAST_BOMB;
+            shells += e->a == BLAST_SHELL;
+            grenades += e->a == BLAST_GRENADE;
+            break;
         case EV_REINFORCED:    p1_reinforced |= e->a == 0; bot_reinforced |= e->a == 2; break;
         case EV_ZONE_CAPTURED: zones_captured++; break;
         case EV_NEST_DESTROYED: nests_destroyed++; break;
@@ -520,7 +565,16 @@ void autotest_observe(const sim_t *sim)
         default: break;
         }
     }
-    mg_seen |= sim->players[0].weapons[WEAPON_SLOT_SUPPORT].owned;
+    const weapon_slot_t *support = &sim->players[0].weapons[WEAPON_SLOT_SUPPORT];
+    mg_seen |= support->owned && support->type == WEAPON_MACHINE_GUN;
+    launcher_seen |= support->owned && support->type == WEAPON_LAUNCHER;
+    uint32_t mines = 0, fires = 0;
+    for (int i = 0; i < SIM_MAX_MINES; i++)
+        mines += sim->mines[i].active;
+    for (int i = 0; i < SIM_MAX_FIRES; i++)
+        fires += sim->fires[i].active;
+    if (mines > most_mines) most_mines = mines;
+    if (fires > most_fires) most_fires = fires;
     for (int i = 0; i < SIM_MAX_TURRETS; i++)
         if (sim->turrets[i].active && SENTRY_AMMO - sim->turrets[i].ammo > (int)turret_shots)
             turret_shots = (uint32_t)(SENTRY_AMMO - sim->turrets[i].ammo);

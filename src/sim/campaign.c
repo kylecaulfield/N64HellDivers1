@@ -6,12 +6,12 @@
 
 // Original names. The map runs left to right, the hive world last.
 const planet_def_t planet_defs[PLANET_COUNT] = {
-    { "KAVEL PRIME",    BIOME_DUST,  0, 10, 55, { PLANET_NONE, PLANET_NONE }, ALL_OBJ },
-    { "ORBRE IV",       BIOME_ASH,   1, 32, 25, { 0, PLANET_NONE },           ALL_OBJ },
-    { "THESSA MINOR",   BIOME_FROST, 1, 34, 80, { 0, PLANET_NONE },           ALL_OBJ },
-    { "MARDOR VII",     BIOME_DUST,  2, 58, 50, { 1, 2 },                     ALL_OBJ },
-    { "QUENEX",         BIOME_FROST, 3, 76, 22, { 3, PLANET_NONE },           ALL_OBJ },
-    { "THE GNASH HIVE", BIOME_ASH,   4, 90, 66, { 4, PLANET_NONE },           1u << OBJ_NESTS },
+    { "KAVEL PRIME",    BIOME_DUST,  0, 10, 55, { PLANET_NONE, PLANET_NONE }, ALL_OBJ, CALLDOWN_MINEFIELD },
+    { "ORBRE IV",       BIOME_ASH,   1, 32, 25, { 0, PLANET_NONE },           ALL_OBJ, CALLDOWN_LAUNCHER },
+    { "THESSA MINOR",   BIOME_FROST, 1, 34, 80, { 0, PLANET_NONE },           ALL_OBJ, CALLDOWN_NAPALM },
+    { "MARDOR VII",     BIOME_DUST,  2, 58, 50, { 1, 2 },                     ALL_OBJ, CALLDOWN_COUNT },
+    { "QUENEX",         BIOME_FROST, 3, 76, 22, { 3, PLANET_NONE },           ALL_OBJ, CALLDOWN_COUNT },
+    { "THE GNASH HIVE", BIOME_ASH,   4, 90, 66, { 4, PLANET_NONE },           1u << OBJ_NESTS, CALLDOWN_COUNT },
 };
 
 void campaign_reset(campaign_t *c)
@@ -83,6 +83,77 @@ bool campaign_complete(const campaign_t *c)
         if (!campaign_liberated(c, i))
             return false;
     return true;
+}
+
+int campaign_reward_planet(calldown_type_t type)
+{
+    for (int i = 0; i < PLANET_COUNT; i++)
+        if (planet_defs[i].reward == type)
+            return i;
+    return -1;
+}
+
+bool campaign_unlocked(const campaign_t *c, calldown_type_t type)
+{
+    switch (type) {
+    case CALLDOWN_MACHINE_GUN:
+    case CALLDOWN_AIRSTRIKE:
+    case CALLDOWN_BARRAGE:
+    case CALLDOWN_SENTRY:
+        return true;
+    case CALLDOWN_REINFORCE:
+    case CALLDOWN_RESUPPLY:
+    case CALLDOWN_EXTRACTION:
+    case CALLDOWN_COUNT:
+        return false;
+    default: {
+        int p = campaign_reward_planet(type);
+        return p >= 0 && campaign_liberated(c, p);
+    }
+    }
+}
+
+static bool in_other_slot(const uint8_t l[LOADOUT_SLOTS], int slot, int type)
+{
+    for (int k = 0; k < LOADOUT_SLOTS; k++)
+        if (k != slot && l[k] == type)
+            return true;
+    return false;
+}
+
+void campaign_fix_loadout(const campaign_t *c, uint8_t l[LOADOUT_SLOTS])
+{
+    for (int k = 0; k < LOADOUT_SLOTS; k++) {
+        bool repeat = false;
+        for (int j = 0; j < k; j++)
+            repeat |= l[j] == l[k];
+        if (repeat || l[k] >= CALLDOWN_COUNT || !campaign_unlocked(c, (calldown_type_t)l[k]))
+            l[k] = CALLDOWN_COUNT; // empty
+    }
+    for (int k = 0; k < LOADOUT_SLOTS; k++) {
+        if (l[k] != CALLDOWN_COUNT)
+            continue;
+        // The defaults first, then anything else unlocked.
+        for (int pass = 0; pass < 2 && l[k] == CALLDOWN_COUNT; pass++) {
+            for (int i = 0; i < (pass ? CALLDOWN_COUNT : LOADOUT_SLOTS) && l[k] == CALLDOWN_COUNT; i++) {
+                int t = pass ? i : LOADOUT_DEFAULT[i];
+                if (campaign_unlocked(c, (calldown_type_t)t) && !in_other_slot(l, k, t))
+                    l[k] = (uint8_t)t;
+            }
+        }
+    }
+}
+
+void campaign_cycle_loadout(const campaign_t *c, uint8_t l[LOADOUT_SLOTS], int slot, int dir)
+{
+    int t = l[slot];
+    for (int n = 0; n < CALLDOWN_COUNT; n++) {
+        t = (t + (dir < 0 ? CALLDOWN_COUNT - 1 : 1)) % CALLDOWN_COUNT;
+        if (campaign_unlocked(c, (calldown_type_t)t) && !in_other_slot(l, slot, t)) {
+            l[slot] = (uint8_t)t;
+            return;
+        }
+    }
 }
 
 objective_type_t campaign_objective(int planet, uint32_t roll)

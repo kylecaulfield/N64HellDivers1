@@ -51,6 +51,8 @@ void sim_init(sim_t *s, uint32_t seed)
     s->settings.flow_budget = FLOW_BUDGET_DEFAULT;
     s->settings.waves = true;
     s->settings.difficulty = DIFFICULTY_STANDARD;
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++)
+        memcpy(s->settings.loadout[i], LOADOUT_DEFAULT, LOADOUT_SLOTS);
     start(s, seed, 1u);
 }
 
@@ -168,6 +170,10 @@ void sim_update_counts(sim_t *s)
         calldowns += s->turrets[i].active;
     for (int i = 0; i < SIM_MAX_PICKUPS; i++)
         calldowns += s->pickups[i].active;
+    for (int i = 0; i < SIM_MAX_MINES; i++)
+        calldowns += s->mines[i].active;
+    for (int i = 0; i < SIM_MAX_FIRES; i++)
+        calldowns += s->fires[i].active;
     s->counts.calldowns = calldowns;
     enemies_collect_active(s);
     s->counts.players = players;

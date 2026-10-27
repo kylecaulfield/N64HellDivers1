@@ -22,6 +22,14 @@ const weapon_def_t weapon_defs[WEAPON_COUNT] = {
         .fire_interval = 2, .reload_ticks = SECONDS(3.5f), .start_reserve = 300,
         .speed = 60.0f, .range = 30.0f, .spread = 0.05f,
     },
+    // Support weapon, from the Grenade Launcher calldown: its rounds explode
+    // (LAUNCHER_RADIUS, LAUNCHER_DAMAGE) on whatever they hit, or where
+    // their range runs out. Friendly fire applies.
+    [WEAPON_LAUNCHER] = {
+        .name = "LAUNCHER", .mag_size = 6, .pellets = 1, .damage = 0.0f,
+        .fire_interval = 18, .reload_ticks = SECONDS(3.0f), .start_reserve = 24,
+        .speed = 22.0f, .range = 22.0f, .spread = 0.02f,
+    },
 };
 
 weapon_slot_t weapon_slot_full(weapon_type_t type)

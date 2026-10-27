@@ -9,7 +9,13 @@ Original homebrew built with [libdragon](https://github.com/DragonMinded/libdrag
 other Nintendo SDK code. Runs on real hardware: NTSC N64 + Expansion Pak, from
 an EverDrive 64 X7.
 
-**Status: milestone M8**: a campaign. **Deploy** opens the sector map:
+**Status: milestone M9**: loadouts and three new calldowns. After the
+briefing each player picks the four calldowns they take into the mission
+(Reinforce, Resupply and Extraction come with everyone). Liberating the
+first planets unlocks a **minefield**, a **grenade launcher** (an explosive
+support weapon) and a **napalm strike** that leaves the ground burning.
+
+M8 added a campaign. **Deploy** opens the sector map:
 six planets held by the swarm, from Kavel Prime to the Gnash Hive. Every
 successful mission raises its planet's liberation (more on harder levels),
 a liberated planet opens the ones beyond it, and liberating the hive world
@@ -111,7 +117,7 @@ Other targets:
 | Command | What it does |
 |---|---|
 | `make test` | Build and run the host unit tests (needs only a host C compiler) |
-| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that goes through the splash, title, menu, sector map and briefing (stepping the level to STANDARD), then moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code, picks up the machine gun and a resupply, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, enters initials for the high score, checks they reached the save, then plays a nests mission and an upload mission with bots on every port, checks the first planet's liberation (75% after three STANDARD successes), and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
+| `make AUTOTEST=1` | `hivebreakers-autotest.z64`: controller 1 is replaced by a scripted bot that goes through the splash, title, menu, sector map, briefing (stepping the level to STANDARD) and loadout screens, then moves, fires with both schemes, dives, switches weapons, uses the debug menu, pauses, calls every calldown by code (switching to a loadout with the minefield, napalm and grenade launcher part way), picks up the machine gun, a resupply and the launcher and fires it, dies (emergency reinforce), turns bots on and has one reinforce another, switches schemes on the pause screen, "plugs in" controller 2 to join by pod and fight and controller 4 to take over a bot and unplug again, then plays a quick mission with player 2 (both zones, Extraction, the hold, boarding), checks the results screen, enters initials for the high score, checks they reached the save, then plays a nests mission and an upload mission with bots on every port, checks the first planet's liberation (75% after three STANDARD successes), and logs `AUTOTEST PASS/FAIL` (used to smoke-test ROMs in ares without a controller) |
 | `make BENCH=1` | `hivebreakers-bench.z64`: runs the stress bench by itself 2 s after boot (see below) |
 | `make clean` | Remove game build output (keeps the SDK) |
 | `make distclean` | Also remove the built SDK |
@@ -156,6 +162,7 @@ title says `NO EEPROM: SCORES WON'T BE KEPT` and the game runs on defaults.
 | Sector map | The campaign (see Campaign): the planets, the supply lines between them, each one's liberation. Left/right steps through the open planets, A deploys to the selected one, B goes back |
 | Options | Music and sound volume (0-10, left/right), bots fill empty slots (on/off), erase high scores (hold A for 1.5 s), reset the campaign (hold A), back. Saved to the EEPROM when you leave |
 | Briefing | The loading screen for the mission: a generated operation name, the planet, the objective (picked at random from what the planet allows) and the steps after it, the reinforcements and score multiplier, the squad and a tip. Player 1 picks the **level** with left/right (remembered; a new save starts on RECON). Controllers 2-4 press START to join (B to leave again); player 1 presses START (or A) to drop, B to go back to the title |
+| Loadout | After the briefing: a column per player with their four calldowns and their codes. On their own controller, up/down picks a slot and left/right changes it (between unlocked calldowns nobody else in their loadout has); remembered per port. Late joiners can still press START. Player 1 presses START to drop, B to go back to the briefing |
 | Mission | The game. START pauses (see Controls) |
 | Results | After the dropship leaves (or the squad is lost): the mission's numbers, the planet's liberation, each player's row, and the score |
 | Initials | For a score that makes the table: up/down picks a letter, A or right moves on, B or left goes back, START (or A on the last letter) saves it |
@@ -244,8 +251,11 @@ value, B closes:
 
 ## Calldowns
 
-Hold **R** and your calldown panel opens (P1 top left, P2 top right, P3 and
-P4 below them, so several can be open at once): every calldown, its code
+Everyone brings **Reinforce**, **Resupply** and **Extraction**; the other
+four calldowns are your loadout, picked after the briefing (a new save, and
+every bot, takes the machine gun, airstrike, sentry and barrage). Hold **R**
+and your calldown panel opens (P1 top left, P2 top right, P3 and P4 below
+them, so several can be open at once): each of those calldowns, its code
 (C-Up `^`, C-Down `v`, C-Left `<`, C-Right `>`), and whether it is ready. The
 inputs you have entered light up green and codes that no longer match dim. A
 wrong input clears the code; keep holding R and start again. Release R on a
@@ -261,10 +271,15 @@ which blinks faster as it gets close and shows the seconds left.
 | Airstrike | `> ^ > v` | 45 s | 3 s | 5 bombs in a line along your throw |
 | Orbital Barrage | `> v v < ^ >` | 90 s | 5 s | 15 shells at random within 8 m over 6 s (the area is ringed in red) |
 | Sentry | `^ < v > ^` | 90 s | 4 s | Turret: shoots the nearest bug in 16 m, 200 rounds or 45 s |
+| Minefield | `v < v >` | 60 s | 3 s | 8 mines scattered within 4.5 m of the beacon. A bug that steps near one sets it off (troopers don't, but the blast hurts them). Mines last 90 s |
+| Grenade Launcher | `< ^ > > v` | 120 s | 4 s | Case with the explosive support weapon (6 rounds, 24 spare; takes the third weapon slot like the machine gun). Each round bursts on whatever it hits, or at 22 m, with full damage to nests |
+| Napalm Strike | `> < v v` | 60 s | 3 s | 4 canisters in a line along your throw; each leaves a fire 2 m across for 8 s that burns bugs and troopers alike |
 | Extraction | `> > ^ v` | 10 s | 2 s | Calls the dropship (see below). Only once the objective is done, from inside the landing zone |
 
-Cooldowns are per player and survive death. All of it is in
-`src/sim/calldown.c` (codes and timings) and `src/sim/tuning.h`.
+Cooldowns are per player and survive death. The minefield, grenade launcher
+and napalm strike are unlocked by liberating Kavel Prime, Orbre IV and
+Thessa Minor (see Campaign). All of it is in `src/sim/calldown.c` (codes and
+timings) and `src/sim/tuning.h`.
 
 **Friendly fire is on for everything**: bullets hit any player except the
 shooter, explosions hurt everyone in range, the sentry's bullets hit players
@@ -341,14 +356,14 @@ when debug aids were used. Then one field per player, `pN=` for a person and
 The sector map's planets, left to right. A planet opens once a planet it is
 linked from is liberated; the first is always open.
 
-| Planet | World | Threat | Opens after | Missions |
-|---|---|---|---|---|
-| Kavel Prime | dust | RECON | (start) | any |
-| Orbre IV | ash | STANDARD | Kavel Prime | any |
-| Thessa Minor | ice | STANDARD | Kavel Prime | any |
-| Mardor VII | dust | HAZARD | Orbre IV or Thessa Minor | any |
-| Quenex | ice | SEVERE | Mardor VII | any |
-| The Gnash Hive | ash | HIVEBREAKER | Quenex | destroy the nests only |
+| Planet | World | Threat | Opens after | Missions | Liberating it unlocks |
+|---|---|---|---|---|---|
+| Kavel Prime | dust | RECON | (start) | any | Minefield |
+| Orbre IV | ash | STANDARD | Kavel Prime | any | Grenade Launcher |
+| Thessa Minor | ice | STANDARD | Kavel Prime | any | Napalm Strike |
+| Mardor VII | dust | HAZARD | Orbre IV or Thessa Minor | any | |
+| Quenex | ice | SEVERE | Mardor VII | any | |
+| The Gnash Hive | ash | HIVEBREAKER | Quenex | destroy the nests only | the sector |
 
 Threat is the level a planet is meant for; any level can be played anywhere.
 A successful mission adds 20% liberation at RECON, plus 5% per level above

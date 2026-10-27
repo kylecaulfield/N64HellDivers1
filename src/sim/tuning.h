@@ -14,10 +14,12 @@
 #define SIM_MAX_PROJECTILES  256
 #define SIM_MAX_OBSTACLES    32
 #define SIM_MAX_EVENTS       192     // explosions can hit dozens of bugs in one tick
-#define SIM_MAX_BEACONS      8
-#define SIM_MAX_STRIKES      4
+#define SIM_MAX_BEACONS      16      // four players with a full loadout each, plus their bots' calls
+#define SIM_MAX_STRIKES      8
 #define SIM_MAX_TURRETS      4
 #define SIM_MAX_PICKUPS      8
+#define SIM_MAX_MINES        24
+#define SIM_MAX_FIRES        8
 
 // --- Arena ---
 #define ARENA_HALF_SIZE      32.0f   // arena is a 64x64 m square centred on the origin
@@ -148,7 +150,28 @@
 #define PICKUP_RADIUS        1.0f
 #define RESUPPLY_USES        4
 #define RESUPPLY_LIFE        SECONDS(60.0f)
-#define MG_PICKUP_LIFE       SECONDS(90.0f)
+#define MG_PICKUP_LIFE       SECONDS(90.0f)   // the machine gun's and the launcher's cases
+
+#define MINE_COUNT           8       // scattered within MINE_SPREAD of the beacon
+#define MINE_SPREAD          4.5f
+#define MINE_TRIGGER         0.9f    // a bug this close sets one off (troopers don't)
+#define MINE_RADIUS          2.2f
+#define MINE_DAMAGE          220.0f
+#define MINE_ARM_TICKS       SECONDS(0.5f)
+#define MINE_LIFE            SECONDS(90.0f)
+
+#define LAUNCHER_RADIUS      2.5f    // a grenade's blast
+#define LAUNCHER_DAMAGE      160.0f
+
+#define NAPALM_PATCHES       4       // in a line along the throw, like the airstrike
+#define NAPALM_SPACING       3.0f
+#define NAPALM_INTERVAL      3
+#define NAPALM_BURST_RADIUS  1.8f    // each canister's burst...
+#define NAPALM_BURST_DAMAGE  80.0f
+#define FIRE_RADIUS          2.0f    // ...and the fire it leaves
+#define FIRE_LIFE            SECONDS(8.0f)
+#define FIRE_DPS             50.0f
+#define FIRE_TICK            6       // burns every this many ticks (fewer hit events)
 
 // --- Mission ---
 #define DROP_IN_TICKS        SECONDS(2.0f)   // players ride pods down at the start

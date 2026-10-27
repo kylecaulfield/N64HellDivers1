@@ -24,6 +24,7 @@ typedef enum {
     SCREEN_MISSION,   // the game, its pause screen and results
     SCREEN_INITIALS,  // a new high score
     SCREEN_SECTOR,    // the campaign's sector map: pick a planet to deploy to
+    SCREEN_LOADOUT,   // after the briefing: each player picks their calldowns
 } screen_t;
 
 // Menu input this frame from any controller in `ports` (bit per port).
@@ -54,6 +55,9 @@ void frontend_menu(int cursor, uint32_t frames);
 // erase: frames A has been held on "erase high scores" or "reset campaign"
 // (0..ERASE_HOLD).
 void frontend_options(int cursor, const settings_t *s, int erase);
+// Each player's loadout, `cursor` = their selected slot.
+void frontend_loadout(const sim_t *sim, const campaign_t *c, const int cursor[SIM_MAX_PLAYERS], uint8_t connected,
+                      uint32_t frames);
 // The sector map, `selected` planet highlighted.
 void frontend_sector(const campaign_t *c, int selected, uint32_t frames);
 // Planet colours by biome, for the map and the briefing.

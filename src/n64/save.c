@@ -26,6 +26,8 @@ static void settings_defaults(void)
 {
     // A new player starts on the easiest level; the briefing changes it.
     settings = (settings_t){ .music = 7, .sfx = 8, .bots = 0, .version = SETTINGS_VERSION, .difficulty = 0 };
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++)
+        memcpy(settings.loadout[i], LOADOUT_DEFAULT, LOADOUT_SLOTS);
 }
 
 static void clamp_settings(void)
@@ -83,6 +85,10 @@ void save_init(void)
         campaign_reset(&campaign);
     }
     campaign_sanitize(&campaign);
+    // Loadouts saved before they existed (zeros), or holding a calldown the
+    // campaign has since locked again (a reset), are repaired.
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++)
+        campaign_fix_loadout(&campaign, settings.loadout[i]);
     debugf("save: loaded (top score %lu, planet 1 at %u%%)\n", (unsigned long)scores.entries[0].score,
            campaign.liberation[0]);
 }
@@ -117,6 +123,9 @@ void save_reset_campaign(void)
 {
     campaign_reset(&campaign);
     save_write_campaign();
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++)
+        campaign_fix_loadout(&campaign, settings.loadout[i]);
+    save_write_settings();
 }
 
 void save_write_settings(void)

@@ -1,3 +1,4 @@
+#include "calldown.h"
 #include "collide.h"
 #include "enemy.h"
 #include "grid.h"
@@ -92,11 +93,19 @@ static void update_one(sim_t *s, projectile_t *pr)
         }
     }
 
+    // A sentry's bullets count as whoever called the sentry in.
+    bool by_player = pr->owner < SIM_MAX_PLAYERS;
+    int by = by_player ? pr->owner : s->turrets[pr->owner & ~OWNER_TURRET].owner;
+    bool explosive = pr->weapon == WEAPON_LAUNCHER;
     if (best_t <= 1.0f) {
         vec2 at = v2_add(p0, v2_scale(step, best_t));
-        // A sentry's bullets count as whoever called the sentry in.
-        bool by_player = pr->owner < SIM_MAX_PLAYERS;
-        int by = by_player ? pr->owner : s->turrets[pr->owner & ~OWNER_TURRET].owner;
+        if (explosive) { // a grenade bursts on whatever it hits
+            if (by_player && (hit_enemy >= 0 || hit_nest >= 0))
+                s->mission.stats.players[by].hits++;
+            pr->active = false;
+            sim_explode(s, at, LAUNCHER_RADIUS, LAUNCHER_DAMAGE, BLAST_GRENADE, by);
+            return;
+        }
         if (hit_player >= 0) {
             if (by_player)
                 s->mission.stats.players[by].friendly_hits++;
@@ -118,8 +127,11 @@ static void update_one(sim_t *s, projectile_t *pr)
     pr->pos = p1;
     pr->range -= step_len;
     const arena_t *a = &s->arena;
-    if (pr->range <= 0.0f || p1.x < a->min.x || p1.x > a->max.x || p1.y < a->min.y || p1.y > a->max.y)
+    if (pr->range <= 0.0f || p1.x < a->min.x || p1.x > a->max.x || p1.y < a->min.y || p1.y > a->max.y) {
         pr->active = false;
+        if (explosive) // out of range: it goes off where it is
+            sim_explode(s, p1, LAUNCHER_RADIUS, LAUNCHER_DAMAGE, BLAST_GRENADE, by);
+    }
 }
 
 void projectiles_update(sim_t *s)

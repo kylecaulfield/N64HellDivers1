@@ -191,8 +191,10 @@ void sound_events(const sim_t *s)
         switch (e->type) {
         case EV_SHOT:
             if (shots++ < 4) {
-                sfx_t id = e->a == WEAPON_SHOTGUN ? SFX_SHOTGUN : e->a == WEAPON_MACHINE_GUN ? SFX_MG : SFX_RIFLE;
-                at(s, id, 1, 0.55f, e->pos);
+                sfx_t id = e->a == WEAPON_SHOTGUN || e->a == WEAPON_LAUNCHER ? SFX_SHOTGUN
+                           : e->a == WEAPON_MACHINE_GUN                     ? SFX_MG
+                                                                            : SFX_RIFLE;
+                at(s, id, 1, e->a == WEAPON_LAUNCHER ? 0.4f : 0.55f, e->pos);
             }
             break;
         case EV_HIT_ENEMY:
@@ -208,7 +210,8 @@ void sound_events(const sim_t *s)
         case EV_DRY_FIRE:     at(s, SFX_DRY_FIRE, 2, 0.6f, e->pos); break;
         case EV_RELOAD:       at(s, SFX_RELOAD, 2, 0.6f, e->pos); break;
         case EV_EXPLOSION:
-            at(s, e->a == BLAST_IMPACT ? SFX_IMPACT : SFX_EXPLOSION, 3, e->a == BLAST_SHELL ? 0.8f : 1.0f, e->pos);
+            at(s, e->a == BLAST_IMPACT ? SFX_IMPACT : SFX_EXPLOSION, 3,
+               e->a == BLAST_SHELL || e->a == BLAST_MINE || e->a == BLAST_GRENADE ? 0.8f : 1.0f, e->pos);
             break;
         case EV_CODE_INPUT:    play(SFX_CODE_BEEP, 4, 0.7f, 0.5f); break;
         case EV_CODE_REJECTED: play(SFX_CODE_REJECT, 4, 0.7f, 0.5f); break;

@@ -12,6 +12,11 @@
 //   Airstrike        bombs in a line along the throw direction
 //   Orbital barrage  shells at random inside an area, over several seconds
 //   Sentry turret    shoots the nearest bug; its bullets hit players too
+//   Minefield        mines scattered around the beacon; a bug steps near
+//                    one and it goes off
+//   Grenade launcher case with the explosive support weapon
+//   Napalm strike    canisters along the throw direction, each leaving a
+//                    patch of fire that burns bugs and troopers
 //   Extraction       once the objective is done, thrown from inside the LZ:
 //                    starts the hold until the dropship lands (mission.h)
 //
@@ -35,8 +40,12 @@ extern const calldown_def_t calldown_defs[CALLDOWN_COUNT];
 int  calldown_match(const uint8_t *inputs, int len);
 // Does any calldown's code start with `inputs`?
 bool calldown_prefix(const uint8_t *inputs, int len);
-// Can player `idx` throw `type` now? Its cooldown must be done; Reinforce
-// also needs a reinforcement left, someone dead and no Reinforce already out.
+// Did player `idx` bring `type` (Reinforce, Resupply and Extraction come
+// with everyone; the rest must be in their loadout)?
+bool calldown_in_loadout(const sim_t *s, int idx, calldown_type_t type);
+// Can player `idx` throw `type` now? It must be in their loadout and its
+// cooldown done; Reinforce also needs a reinforcement left, someone dead and
+// no Reinforce already out.
 bool calldown_available(const sim_t *s, int idx, calldown_type_t type);
 
 // Code entry and the throw, once per tick for each living player.

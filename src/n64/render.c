@@ -58,13 +58,16 @@ static const uint8_t biome_light[BIOME_COUNT][3][3] = {
 static const int8_t drop_model[CALLDOWN_COUNT] = {
     [CALLDOWN_REINFORCE] = MDL_POD, [CALLDOWN_RESUPPLY] = MDL_CRATE,
     [CALLDOWN_MACHINE_GUN] = MDL_MGCASE, [CALLDOWN_AIRSTRIKE] = -1,
-    [CALLDOWN_BARRAGE] = -1, [CALLDOWN_SENTRY] = MDL_TURRET, [CALLDOWN_EXTRACTION] = -1,
+    [CALLDOWN_BARRAGE] = -1, [CALLDOWN_SENTRY] = MDL_TURRET,
+    [CALLDOWN_MINEFIELD] = MDL_CRATE, [CALLDOWN_LAUNCHER] = MDL_MGCASE, [CALLDOWN_NAPALM] = -1,
+    [CALLDOWN_EXTRACTION] = -1,
 };
 static const uint8_t beacon_rgb[CALLDOWN_COUNT][3] = {
     [CALLDOWN_REINFORCE] = { 90, 220, 255 }, [CALLDOWN_RESUPPLY] = { 120, 255, 120 },
     [CALLDOWN_MACHINE_GUN] = { 255, 200, 60 }, [CALLDOWN_AIRSTRIKE] = { 255, 70, 50 },
     [CALLDOWN_BARRAGE] = { 255, 120, 40 }, [CALLDOWN_SENTRY] = { 255, 240, 90 },
-    [CALLDOWN_EXTRACTION] = { 230, 240, 255 },
+    [CALLDOWN_MINEFIELD] = { 255, 80, 200 }, [CALLDOWN_LAUNCHER] = { 255, 150, 70 },
+    [CALLDOWN_NAPALM] = { 255, 100, 20 }, [CALLDOWN_EXTRACTION] = { 230, 240, 255 },
 };
 
 typedef struct {
@@ -89,8 +92,10 @@ static render_stats_t stats;
 #define MAX_PROPS (SIM_MAX_BEACONS * 3 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS + SIM_MAX_PLAYERS * 3 + 2 + ARENA_SITES)
 #define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES + MAX_PROPS)
 #define TELEGRAPH_DOTS 16
+#define FIRE_FLAMES 5
 #define MAX_PARTICLES (SIM_MAX_PROJECTILES * 2 + FX_MAX + SIM_MAX_PLAYERS * 3 + \
                        SIM_MAX_BEACONS * (4 + TELEGRAPH_DOTS) + SIM_MAX_STRIKES * TELEGRAPH_DOTS + \
+                       SIM_MAX_MINES * 2 + SIM_MAX_FIRES * FIRE_FLAMES + \
                        SIM_MAX_PICKUPS + (ARENA_SITES + 1) * (TELEGRAPH_DOTS + 9) + \
                        SIM_MAX_PLAYERS * 3 + SIM_MAX_BEACONS * 2 + ENGINE_GLOWS + 4)
 #define ENGINE_GLOWS 4
@@ -303,12 +308,17 @@ static void build_calldowns(const sim_t *sim, pbuild_t *pb)
             continue;
         if (b->type == CALLDOWN_BARRAGE) {
             pb_ring(pb, b->pos, BARRAGE_AREA, c[0], c[1], c[2]);
-        } else if (b->type == CALLDOWN_AIRSTRIKE) {
-            for (int k = 0; k < AIRSTRIKE_BOMBS; k++) {
-                float along = ((float)k - (AIRSTRIKE_BOMBS - 1) * 0.5f) * AIRSTRIKE_SPACING;
+        } else if (b->type == CALLDOWN_AIRSTRIKE || b->type == CALLDOWN_NAPALM) {
+            bool napalm = b->type == CALLDOWN_NAPALM;
+            int n = napalm ? NAPALM_PATCHES : AIRSTRIKE_BOMBS;
+            float spacing = napalm ? NAPALM_SPACING : AIRSTRIKE_SPACING;
+            for (int k = 0; k < n; k++) {
+                float along = ((float)k - (n - 1) * 0.5f) * spacing;
                 vec2 at = v2_add(b->pos, v2_scale(b->dir, along));
                 pb_add(pb, at.x, 0.1f, -at.y, 24, c[0], c[1], c[2]);
             }
+        } else if (b->type == CALLDOWN_MINEFIELD) {
+            pb_ring(pb, b->pos, MINE_SPREAD, c[0], c[1], c[2]);
         }
     }
     for (int i = 0; i < SIM_MAX_STRIKES; i++) {
@@ -320,6 +330,36 @@ static void build_calldowns(const sim_t *sim, pbuild_t *pb)
         const pickup_t *k = &sim->pickups[i];
         if (k->active && ((sim->tick / 8) & 1))
             pb_add(pb, k->pos.x, 1.4f, -k->pos.y, 24, 255, 220, 120);
+    }
+    // Mines: a dark disc with a red light that blinks once armed.
+    for (int i = 0; i < SIM_MAX_MINES; i++) {
+        const mine_t *m = &sim->mines[i];
+        if (!m->active)
+            continue;
+        pb_add(pb, m->pos.x, 0.08f, -m->pos.y, 14, 40, 40, 44);
+        bool armed = MINE_LIFE - m->life >= MINE_ARM_TICKS;
+        if (!armed || ((sim->tick + (uint32_t)i * 5) / 10) & 1)
+            pb_add(pb, m->pos.x, 0.2f, -m->pos.y, 8, 255, armed ? 40 : 200, 40);
+    }
+}
+
+// Burning napalm: flames flicker over each patch (semi-transparent pass).
+static void build_fires(const sim_t *sim, pbuild_t *pb)
+{
+    static const uint8_t FLAME[3][3] = { { 255, 150, 40 }, { 255, 90, 20 }, { 255, 210, 90 } };
+    for (int i = 0; i < SIM_MAX_FIRES; i++) {
+        const fire_t *f = &sim->fires[i];
+        if (!f->active)
+            continue;
+        float fade = f->life < SECONDS(1.0f) ? (float)f->life / SECONDS(1.0f) : 1.0f;
+        for (int k = 0; k < FIRE_FLAMES; k++) {
+            float a = 6.2832f * (float)k / FIRE_FLAMES + (float)(frame_count % 64) * 0.1f;
+            float r = (k % 2 ? 0.5f : 1.2f) * FIRE_RADIUS * 0.6f;
+            int size = (int)((float)(26 + (int)((frame_count + (uint32_t)k * 7) % 12)) * fade);
+            const uint8_t *c = FLAME[(k + frame_count / 3) % 3];
+            pb_add(pb, f->pos.x + fm_cosf(a) * r, 0.5f + 0.3f * (float)(k % 3), -(f->pos.y + fm_sinf(a) * r), size,
+                   c[0], c[1], c[2]);
+        }
     }
 }
 
@@ -499,6 +539,11 @@ static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec
             continue;
         bool shotgun = p->weapon == WEAPON_SHOTGUN;
         vec2 tail = v2_sub(p->pos, v2_scale(p->vel, SIM_DT * 0.5f));
+        if (p->weapon == WEAPON_LAUNCHER) { // a grenade: a dark round with a glowing fuse
+            pb_add(&pb, p->pos.x, 1.0f, -p->pos.y, 18, 60, 64, 56);
+            pb_add(&pb, tail.x, 1.0f, -tail.y, 10, 255, 160, 60);
+            continue;
+        }
         pb_add(&pb, p->pos.x, 1.0f, -p->pos.y, shotgun ? 16 : 20, 255, 240, 150);
         pb_add(&pb, tail.x, 1.0f, -tail.y, shotgun ? 10 : 14, 255, 170, 60);
     }
@@ -529,6 +574,7 @@ static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec
             pb_pad(&pb);
             *glow_start = pb.count;
             build_engines(sim, &pb);
+            build_fires(sim, &pb);
         }
         for (int i = 0; i < FX_MAX; i++) {
             const fx_particle_t *f = &fx[i];
@@ -580,7 +626,7 @@ static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 
         const pickup_t *k = &sim->pickups[i];
         if (!k->active || !in_rect(k->pos, vmin, vmax))
             continue;
-        prop_model[n - first] = k->type == PICKUP_RESUPPLY ? MDL_CRATE : MDL_MGCASE;
+        prop_model[n - first] = k->type == PICKUP_RESUPPLY ? MDL_CRATE : MDL_MGCASE; // the launcher's case too
         unit_matrix(&dyn[n++], k->pos, 0.0f, v2(0.0f, 1.0f), 0.0f, 1.0f);
     }
     // The squad's pods coming down at the start of the mission, and every

@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 
+#include "arena.h"
 #include "collide.h"
 #include "enemy.h"
 #include "grid.h"
@@ -23,6 +24,9 @@ const calldown_def_t calldown_defs[CALLDOWN_COUNT] = {
     [CALLDOWN_AIRSTRIKE]   = { "AIRSTRIKE",   { R, U, R, D },       4, SECONDS(45), SECONDS(3) },
     [CALLDOWN_BARRAGE]     = { "BARRAGE",     { R, D, D, L, U, R }, 6, SECONDS(90), SECONDS(5) },
     [CALLDOWN_SENTRY]      = { "SENTRY",      { U, L, D, R, U },    5, SECONDS(90), SECONDS(4) },
+    [CALLDOWN_MINEFIELD]   = { "MINEFIELD",   { D, L, D, R },       4, SECONDS(60), SECONDS(3) },
+    [CALLDOWN_LAUNCHER]    = { "LAUNCHER",    { L, U, R, R, D },    5, SECONDS(120), SECONDS(4) },
+    [CALLDOWN_NAPALM]      = { "NAPALM",      { R, L, D, D },       4, SECONDS(60), SECONDS(3) },
     [CALLDOWN_EXTRACTION]  = { "EXTRACTION",  { R, R, U, D },       4, SECONDS(10), SECONDS(2) },
 };
 
@@ -77,9 +81,19 @@ static bool beacon_out(const sim_t *s, calldown_type_t type)
     return false;
 }
 
+bool calldown_in_loadout(const sim_t *s, int idx, calldown_type_t type)
+{
+    if (type == CALLDOWN_REINFORCE || type == CALLDOWN_RESUPPLY || type == CALLDOWN_EXTRACTION)
+        return true;
+    for (int k = 0; k < LOADOUT_SLOTS; k++)
+        if (s->settings.loadout[idx][k] == type)
+            return true;
+    return false;
+}
+
 bool calldown_available(const sim_t *s, int idx, calldown_type_t type)
 {
-    if (s->cooldowns[idx][type])
+    if (s->cooldowns[idx][type] || !calldown_in_loadout(s, idx, type))
         return false;
     if (type == CALLDOWN_REINFORCE)
         return s->reinforcements > 0 && anyone_dead(s) && !beacon_out(s, CALLDOWN_REINFORCE);
@@ -254,6 +268,34 @@ static void add_turret(sim_t *s, const beacon_t *b)
     }
 }
 
+// A minefield: mines scattered around the beacon, clear of rocks.
+static void scatter_mines(sim_t *s, const beacon_t *b)
+{
+    int placed = 0;
+    for (int i = 0; i < SIM_MAX_MINES && placed < MINE_COUNT; i++) {
+        mine_t *m = &s->mines[i];
+        if (m->active)
+            continue;
+        float ang = rng_float(&s->rng) * 6.2831853f;
+        float r = sqrtf(rng_float(&s->rng)) * MINE_SPREAD;
+        vec2 at = v2_add(b->pos, v2(cosf(ang) * r, sinf(ang) * r));
+        arena_resolve(&s->arena, &at, 0.2f);
+        *m = (mine_t){ .active = true, .owner = b->owner, .life = MINE_LIFE, .pos = at };
+        placed++;
+    }
+}
+
+static void add_fire(sim_t *s, vec2 pos, int owner)
+{
+    for (int i = 0; i < SIM_MAX_FIRES; i++) {
+        fire_t *f = &s->fires[i];
+        if (f->active)
+            continue;
+        *f = (fire_t){ .active = true, .owner = (uint8_t)owner, .life = FIRE_LIFE, .pos = pos };
+        return;
+    }
+}
+
 static void arrive(sim_t *s, const beacon_t *b)
 {
     sim_push_event(s, EV_CALLDOWN, b->type, b->pos, b->dir);
@@ -272,7 +314,16 @@ static void arrive(sim_t *s, const beacon_t *b)
         break;
     case CALLDOWN_AIRSTRIKE:
     case CALLDOWN_BARRAGE:
+    case CALLDOWN_NAPALM:
         add_strike(s, b);
+        break;
+    case CALLDOWN_MINEFIELD:
+        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, b->owner);
+        scatter_mines(s, b);
+        break;
+    case CALLDOWN_LAUNCHER:
+        sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, b->owner);
+        add_pickup(s, PICKUP_LAUNCHER, 1, MG_PICKUP_LIFE, b->pos);
         break;
     case CALLDOWN_SENTRY:
         sim_explode(s, b->pos, DROP_CRUSH_RADIUS, DROP_CRUSH_DAMAGE, BLAST_IMPACT, b->owner);
@@ -321,6 +372,13 @@ static void update_strike(sim_t *s, strike_t *k)
         sim_explode(s, v2_add(k->center, v2_scale(k->dir, along)), AIRSTRIKE_RADIUS, AIRSTRIKE_DAMAGE, BLAST_BOMB, k->owner);
         k->timer = AIRSTRIKE_INTERVAL;
         k->active = ++k->done < AIRSTRIKE_BOMBS;
+    } else if (k->type == CALLDOWN_NAPALM) {
+        float along = ((float)k->done - (NAPALM_PATCHES - 1) * 0.5f) * NAPALM_SPACING;
+        vec2 at = v2_add(k->center, v2_scale(k->dir, along));
+        sim_explode(s, at, NAPALM_BURST_RADIUS, NAPALM_BURST_DAMAGE, BLAST_NAPALM, k->owner);
+        add_fire(s, at, k->owner);
+        k->timer = NAPALM_INTERVAL;
+        k->active = ++k->done < NAPALM_PATCHES;
     } else {
         // Uniform over the disc: radius from the square root.
         float ang = rng_float(&s->rng) * 6.2831853f;
@@ -414,7 +472,10 @@ static void update_pickup(sim_t *s, pickup_t *k)
             sim_refill_ammo(s, i);
             k->active = --k->uses > 0;
         } else {
-            p->weapons[WEAPON_SLOT_SUPPORT] = weapon_slot_full(WEAPON_MACHINE_GUN);
+            // A support weapon: it takes the third slot (replacing whatever
+            // support weapon was there).
+            p->weapons[WEAPON_SLOT_SUPPORT] =
+                weapon_slot_full(k->type == PICKUP_LAUNCHER ? WEAPON_LAUNCHER : WEAPON_MACHINE_GUN);
             p->weapon = WEAPON_SLOT_SUPPORT;
             p->reload_timer = 0;
             k->active = false;
@@ -464,6 +525,59 @@ static void update_squad(sim_t *s)
     }
 }
 
+static void update_mine(sim_t *s, mine_t *m)
+{
+    if (--m->life == 0) {
+        m->active = false;
+        return;
+    }
+    if (MINE_LIFE - m->life < MINE_ARM_TICKS)
+        return;
+    const float r = MINE_TRIGGER + ENEMY_MAX_RADIUS;
+    grid_iter_t it;
+    grid_iter_init(&it, s, v2(m->pos.x - r, m->pos.y - r), v2(m->pos.x + r, m->pos.y + r));
+    int ei;
+    while ((ei = grid_iter_next(&it)) >= 0) {
+        const enemy_t *e = &s->enemies[ei];
+        float reach = MINE_TRIGGER + enemy_defs[e->type].radius;
+        if (e->active && v2_dist2(e->pos, m->pos) < reach * reach) {
+            m->active = false;
+            sim_explode(s, m->pos, MINE_RADIUS, MINE_DAMAGE, BLAST_MINE, m->owner);
+            return;
+        }
+    }
+}
+
+// Burning napalm: every FIRE_TICK ticks, whatever stands in it takes
+// FIRE_DPS's worth, bugs and troopers alike (its kills go to whoever threw it).
+static void update_fire(sim_t *s, int idx)
+{
+    fire_t *f = &s->fires[idx];
+    if (--f->life == 0) {
+        f->active = false;
+        return;
+    }
+    if ((f->life + (uint16_t)idx) % FIRE_TICK)
+        return;
+    const float dmg = FIRE_DPS * FIRE_TICK / SIM_HZ;
+    const float r = FIRE_RADIUS + ENEMY_MAX_RADIUS;
+    grid_iter_t it;
+    grid_iter_init(&it, s, v2(f->pos.x - r, f->pos.y - r), v2(f->pos.x + r, f->pos.y + r));
+    int ei;
+    while ((ei = grid_iter_next(&it)) >= 0) {
+        const enemy_t *e = &s->enemies[ei];
+        float reach = FIRE_RADIUS + enemy_defs[e->type].radius;
+        if (e->active && v2_dist2(e->pos, f->pos) < reach * reach)
+            enemy_damage(s, ei, dmg, e->pos, v2(0.0f, 0.0f), f->owner);
+    }
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &s->players[i];
+        float reach = FIRE_RADIUS + PLAYER_RADIUS;
+        if (sim_player_alive(p) && v2_dist2(p->pos, f->pos) < reach * reach)
+            player_damage(s, i, dmg);
+    }
+}
+
 void calldowns_update(sim_t *s)
 {
     for (int i = 0; i < SIM_MAX_PLAYERS; i++)
@@ -483,5 +597,11 @@ void calldowns_update(sim_t *s)
     for (int i = 0; i < SIM_MAX_PICKUPS; i++)
         if (s->pickups[i].active)
             update_pickup(s, &s->pickups[i]);
+    for (int i = 0; i < SIM_MAX_MINES; i++)
+        if (s->mines[i].active)
+            update_mine(s, &s->mines[i]);
+    for (int i = 0; i < SIM_MAX_FIRES; i++)
+        if (s->fires[i].active)
+            update_fire(s, i);
     update_squad(s);
 }

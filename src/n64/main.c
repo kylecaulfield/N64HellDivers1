@@ -76,6 +76,7 @@ static char initials[3] = { 'A', 'A', 'A' };
 static int initials_pos;
 static int planet;                   // the mission's planet (campaign.h)
 static uint32_t demo_frames;         // the attract demo's current mission, frames
+static int loadout_cursor[SIM_MAX_PLAYERS]; // each player's slot on the loadout screen
 static uint8_t squad_next;           // who goes to the briefing from the sector map
 static results_campaign_t liberation; // what the mission did for its planet
 static uint32_t frames;              // since boot
@@ -180,6 +181,13 @@ static void apply_settings(void)
     sound_set_volumes(st->music, st->sfx);
 }
 
+// Port `p`'s loadout into the sim: a person's saved one, a bot's default.
+static void apply_loadout(int p)
+{
+    const uint8_t *l = (sim.humans & (1u << p)) ? save_settings()->loadout[p] : LOADOUT_DEFAULT;
+    memcpy(sim.settings.loadout[p], l, LOADOUT_SLOTS);
+}
+
 // A new attract demo: a random objective and biome at the standard level.
 static void new_demo(void)
 {
@@ -219,6 +227,8 @@ static void to_briefing(uint8_t humans)
     sim.settings.objective = (uint8_t)autotest_objective();
 #endif
     sim.humans = humans | 1u;
+    for (int p = 0; p < SIM_MAX_PLAYERS; p++)
+        apply_loadout(p);
     sim_restart(&sim, mission_seed);
     world_changed();
     sound_music(MUSIC_TITLE);
@@ -289,6 +299,7 @@ static void mission_input(const input_frame_t *in, uint8_t connected)
             continue;
         if (!(sim.humans & (1u << p))) {
             bool now = sim_player_join(&sim, p);
+            apply_loadout(p);
             sound_ui(UI_JOIN);
             debugf("P%d joined%s\n", p + 1, now ? "" : " for the next mission");
             continue;
@@ -425,9 +436,11 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
             uint8_t bit = (uint8_t)(1u << p);
             if ((i->pressed & SIM_BTN_START) && !(sim.humans & bit)) {
                 sim_player_join(&sim, p);
+                apply_loadout(p);
                 sound_ui(UI_JOIN);
             } else if (((i->pressed & SIM_BTN_B) || !i->connected) && (sim.humans & bit)) {
                 sim_player_leave(&sim, p);
+                apply_loadout(p);
                 sound_ui(UI_BACK);
             }
         }
@@ -447,13 +460,58 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
         }
         if ((in->ports[0].pressed & (SIM_BTN_START | SIM_BTN_A)) && screen_frames > 15) {
             sound_ui(UI_SELECT);
-            save_write_settings();
-            to_mission();
+            enter(SCREEN_LOADOUT);
+            for (int p = 0; p < SIM_MAX_PLAYERS; p++)
+                loadout_cursor[p] = 0;
         } else if (in->ports[0].pressed & SIM_BTN_B) {
             sound_ui(UI_BACK);
             to_title();
         }
         break;
+    case SCREEN_LOADOUT: {
+        // Everyone playing picks at once, each on their own controller:
+        // up/down the slot, left/right the calldown in it. Late joiners can
+        // still come in.
+        static int8_t stick_was[SIM_MAX_PLAYERS];
+        for (int p = 0; p < SIM_MAX_PLAYERS; p++) {
+            const sim_input_t *i = &in->ports[p];
+            uint8_t bit = (uint8_t)(1u << p);
+            if (p > 0 && (i->pressed & SIM_BTN_START) && !(sim.humans & bit)) {
+                sim_player_join(&sim, p);
+                apply_loadout(p);
+                sound_ui(UI_JOIN);
+                continue;
+            }
+            if (!(sim.humans & bit))
+                continue;
+            // The stick counts once per push, like a D-pad press.
+            int8_t dir = i->stick_y > 50 ? 1 : i->stick_y < -50 ? 2 : i->stick_x < -50 ? 3 : i->stick_x > 50 ? 4 : 0;
+            bool fresh = dir && dir != stick_was[p];
+            stick_was[p] = dir;
+            bool up = (i->pressed & SIM_BTN_DUP) || (fresh && dir == 1);
+            bool down = (i->pressed & SIM_BTN_DDOWN) || (fresh && dir == 2);
+            int change = (i->pressed & SIM_BTN_DLEFT) || (fresh && dir == 3) ? -1
+                         : (i->pressed & SIM_BTN_DRIGHT) || (fresh && dir == 4) ? 1 : 0;
+            if (up || down) {
+                loadout_cursor[p] = (loadout_cursor[p] + (up ? LOADOUT_SLOTS - 1 : 1)) % LOADOUT_SLOTS;
+                sound_ui(UI_MOVE);
+            } else if (change) {
+                uint8_t before = st->loadout[p][loadout_cursor[p]];
+                campaign_cycle_loadout(save_campaign(), st->loadout[p], loadout_cursor[p], change);
+                apply_loadout(p);
+                sound_ui(st->loadout[p][loadout_cursor[p]] != before ? UI_MOVE : UI_ERROR);
+            }
+        }
+        if ((in->ports[0].pressed & (SIM_BTN_START | SIM_BTN_A)) && screen_frames > 10) {
+            sound_ui(UI_SELECT);
+            save_write_settings();
+            to_mission();
+        } else if (in->ports[0].pressed & SIM_BTN_B) {
+            sound_ui(UI_BACK);
+            enter(SCREEN_BRIEFING);
+        }
+        break;
+    }
     case SCREEN_SECTOR: {
         // Left/right (or up/down) step through the open planets.
         int step = n.right || n.down ? 1 : n.left || n.up ? -1 : 0;
@@ -521,7 +579,8 @@ static void frontend_input(const input_frame_t *in, uint8_t connected)
 
 static bool world_visible(void)
 {
-    return screen != SCREEN_SPLASH && screen != SCREEN_BRIEFING && screen != SCREEN_SECTOR;
+    return screen != SCREEN_SPLASH && screen != SCREEN_BRIEFING && screen != SCREEN_SECTOR &&
+           screen != SCREEN_LOADOUT;
 }
 
 static void draw_2d(uint8_t connected)
@@ -547,6 +606,9 @@ static void draw_2d(uint8_t connected)
         break;
     case SCREEN_SECTOR:
         frontend_sector(save_campaign(), cursor, screen_frames);
+        break;
+    case SCREEN_LOADOUT:
+        frontend_loadout(&sim, save_campaign(), loadout_cursor, connected, screen_frames);
         break;
     }
     // Fade in on a new screen (not between the title and its menus).

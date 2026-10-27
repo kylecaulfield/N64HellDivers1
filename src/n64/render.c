@@ -1,0 +1,1115 @@
+#include "render.h"
+#include "bench.h"
+#include "camera.h"
+#include "enemy.h"
+#include "fx.h"
+#include "gpu_timing.h"
+#include "mission.h"
+#include "palette.h"
+
+#include <libdragon.h>
+#include <stdio.h>
+#include <string.h>
+#include <t3d/t3d.h>
+#include <t3d/t3danim.h>
+#include <t3d/t3dmodel.h>
+#include <t3d/t3dskeleton.h>
+#include <t3d/tpx.h>
+
+// Draws the sim state: floor, rocks, players, bugs and calldown props
+// (beacons, drops, turrets, pickups) as Tiny3D models, and everything small
+// (bullets, effects, beacon lights, telegraphs, aim markers) as tpx
+// particles: one opaque pass, then one semi-transparent pass for explosion
+// cores. Camera shake and the explosion flash come from fx.
+//
+// Soldiers are skinned. Bugs are rigged too, but their animation is baked:
+// at boot each type's walk and attack clips are sampled once per sim tick and
+// the mesh is skinned on the CPU into a vertex buffer per frame (see
+// bake_clip). A bug then draws as a static mesh, its draw block reading
+// whichever frame a segment points at: one matrix and its vertices, without
+// a bone matrix per part, which cost the RSP most of a bug's time. Walking
+// bugs each keep their own phase of the cycle; attacking ones follow their
+// own windup and recovery. Nothing is animated per frame. Bugs are drawn
+// grouped by type: the type's material once, then a geometry-only block per
+// bug (the pattern of Tiny3D's 17_culling example), so the RSP does not
+// switch to rdpq mode changes per bug.
+
+// Bug models must be in enemy_type_t order, right after the soldier.
+enum {
+    MDL_SOLDIER, MDL_SKITTER, MDL_GNASHER, MDL_BULWARK,
+    MDL_ROCK_A, MDL_ROCK_B, MDL_ROCK_C, MDL_GROUND,
+    MDL_BEACON, MDL_TURRET, MDL_CRATE, MDL_MGCASE, MDL_POD, MDL_DROPSHIP, MDL_SHADOW,
+    MDL_NEST, MDL_NEST_DEAD, MDL_TERMINAL,
+    // Biome variants of the ground and the rocks (biome_t order after dust).
+    MDL_GROUND_ASH, MDL_GROUND_FROST, MDL_ROCKS_ASH, MDL_ROCKS_FROST = MDL_ROCKS_ASH + ROCK_KIND_COUNT,
+    MDL_COUNT = MDL_ROCKS_FROST + ROCK_KIND_COUNT
+};
+
+static const char *const model_names[MDL_COUNT] = {
+    "soldier", "skitter", "gnasher", "bulwark", "rock_a", "rock_b", "rock_c", "ground",
+    "beacon", "turret", "crate", "mgcase", "pod", "dropship", "shadow",
+    "nest", "nest_dead", "terminal", "ground_ash", "ground_frost",
+    "rock_a_ash", "rock_b_ash", "rock_c_ash", "rock_a_frost", "rock_b_frost", "rock_c_frost",
+};
+
+// Each biome's ground and rocks, and its light: clear colour, ambient, sun.
+static const uint8_t biome_ground[BIOME_COUNT] = { MDL_GROUND, MDL_GROUND_ASH, MDL_GROUND_FROST };
+static const uint8_t biome_rocks[BIOME_COUNT] = { MDL_ROCK_A, MDL_ROCKS_ASH, MDL_ROCKS_FROST };
+static const uint8_t biome_light[BIOME_COUNT][3][3] = {
+    [BIOME_DUST]  = { { 24, 22, 26 }, { 90, 88, 100 }, { 255, 240, 220 } },
+    [BIOME_ASH]   = { { 22, 14, 14 }, { 100, 76, 72 }, { 255, 205, 170 } },
+    [BIOME_FROST] = { { 18, 24, 32 }, { 92, 102, 124 }, { 225, 236, 255 } },
+};
+
+// The floor comes in 8 m chunks (tools/genmodels.py, arena_floor), each an
+// object with its own bounds, and only those on screen are drawn: a third of
+// the arena or less. Drawing all of it cost the RSP about 3 ms a frame.
+#define GROUND_CHUNKS 64
+typedef struct {
+    rspq_block_t *material;
+    int count;
+    struct {
+        rspq_block_t *block;
+        vec2 min, max; // in sim coordinates
+    } chunk[GROUND_CHUNKS];
+} ground_t;
+static ground_t grounds[BIOME_COUNT];
+
+// What falls from orbit for each calldown (-1: nothing, it is a strike), and
+// the colour of its beacon light.
+static const int8_t drop_model[CALLDOWN_COUNT] = {
+    [CALLDOWN_REINFORCE] = MDL_POD, [CALLDOWN_RESUPPLY] = MDL_CRATE,
+    [CALLDOWN_MACHINE_GUN] = MDL_MGCASE, [CALLDOWN_AIRSTRIKE] = -1,
+    [CALLDOWN_BARRAGE] = -1, [CALLDOWN_SENTRY] = MDL_TURRET,
+    [CALLDOWN_MINEFIELD] = MDL_CRATE, [CALLDOWN_LAUNCHER] = MDL_MGCASE, [CALLDOWN_NAPALM] = -1,
+    [CALLDOWN_EXTRACTION] = -1,
+};
+static const uint8_t beacon_rgb[CALLDOWN_COUNT][3] = {
+    [CALLDOWN_REINFORCE] = { 90, 220, 255 }, [CALLDOWN_RESUPPLY] = { 120, 255, 120 },
+    [CALLDOWN_MACHINE_GUN] = { 255, 200, 60 }, [CALLDOWN_AIRSTRIKE] = { 255, 70, 50 },
+    [CALLDOWN_BARRAGE] = { 255, 120, 40 }, [CALLDOWN_SENTRY] = { 255, 240, 90 },
+    [CALLDOWN_MINEFIELD] = { 255, 80, 200 }, [CALLDOWN_LAUNCHER] = { 255, 150, 70 },
+    [CALLDOWN_NAPALM] = { 255, 100, 20 }, [CALLDOWN_EXTRACTION] = { 230, 240, 255 },
+};
+
+// A baked clip: `count` copies of the model's vertex buffer (`pairs`
+// T3DVertPacked each), skinned to one pose per sim tick.
+typedef struct {
+    T3DVertPacked *frames;
+    uint16_t count, pairs;
+} pose_clip_t;
+// The segment the bug draw blocks read their vertices through.
+#define SEG_BUG_FRAME T3D_SEGMENT_1
+
+static pose_clip_t bug_walk[ENEMY_TYPE_COUNT], bug_attack[ENEMY_TYPE_COUNT];
+static uint32_t pose_ticks; // game ticks animated so far (they stop while paused)
+
+// Where the attack clip's rear-up ends and the strike starts, as a fraction
+// of the clip (tools/genmodels.py, add_attack): the windup plays up to here,
+// the recovery the rest.
+#define ATTACK_REAR_END 0.55f
+// Frames between neighbouring bugs' walk phases, so a crowd doesn't march in step.
+#define WALK_PHASE_STEP 5
+
+static struct {
+    T3DSkeleton skel;
+    T3DAnim run, idle;
+    bool running;
+} soldier_pose[SIM_MAX_PLAYERS];
+
+static render_stats_t stats;
+
+#define MODEL_SCALE (WORLD_SCALE / 64.0f)
+// Beacons with their drops and the drops' shadows, turrets, pickups,
+// troopers' shadows, pods with theirs, the dropship with its, the
+// objective's nests or terminal.
+#define MAX_PROPS (SIM_MAX_BEACONS * 3 + SIM_MAX_TURRETS + SIM_MAX_PICKUPS + SIM_MAX_PLAYERS * 3 + 2 + ARENA_SITES)
+#define MAX_DYNAMIC (SIM_MAX_PLAYERS + SIM_MAX_ENEMIES + MAX_PROPS)
+#define TELEGRAPH_DOTS 16
+#define FIRE_FLAMES 5
+#define MAX_PARTICLES (SIM_MAX_PROJECTILES * 2 + FX_MAX + SIM_MAX_PLAYERS * 3 + \
+                       SIM_MAX_BEACONS * (4 + TELEGRAPH_DOTS) + SIM_MAX_STRIKES * TELEGRAPH_DOTS + \
+                       SIM_MAX_MINES * 2 + SIM_MAX_FIRES * FIRE_FLAMES + \
+                       SIM_MAX_PICKUPS + (ARENA_SITES + 1) * (TELEGRAPH_DOTS + 9) + \
+                       SIM_MAX_PLAYERS * 3 + SIM_MAX_BEACONS * 2 + ENGINE_GLOWS + 4)
+#define ENGINE_GLOWS 4
+#define PARTICLE_PAIRS (MAX_PARTICLES / 2)
+#define CULL_PAD 2.0f
+
+static T3DModel *models[MDL_COUNT];
+static rspq_block_t *blocks[MDL_COUNT];
+// Per bug type: the material, when `blocks` holds geometry only. NULL for a
+// model with several materials, whose block then carries them all.
+static rspq_block_t *bug_material[ENEMY_TYPE_COUNT];
+// The soldier's material with the player-colour combiner, when `blocks`
+// holds its geometry only (a single-material model); NULL otherwise, and
+// the soldier is drawn untinted.
+static rspq_block_t *soldier_material;
+
+// Vertex alpha 0 marks the parts that take the player's colour (prim):
+// cycle 1 picks white or prim by shade alpha, cycle 2 lights it.
+#define TINT_COMBINER RDPQ_COMBINER2((ENV, PRIM, SHADE_ALPHA, PRIM), (0, 0, 0, 1), \
+                                     (COMBINED, 0, SHADE, 0), (0, 0, 0, 1))
+static T3DViewport viewport;
+static int frame_idx;
+static uint32_t frame_count;      // rendered frames, for visual-only animation
+static uint32_t success_frames;   // since the mission succeeded: the dropship lifts off
+
+// Uncached: the RSP DMAs these.
+static T3DMat4FP *static_mats;    // [0] = floor, [1..] = rocks
+static T3DMat4FP *dynamic_mats;   // [FB_COUNT][MAX_DYNAMIC]
+static TPXParticleS16 *particles; // [FB_COUNT][PARTICLE_PAIRS]
+static T3DMat4FP *particle_mat;   // identity: particles are already in world units
+static const T3DVertPacked *dyn_frame[MAX_DYNAMIC]; // baked frame per dynamic matrix (bugs only)
+static uint8_t dyn_type[MAX_DYNAMIC]; // enemy type per dynamic matrix (bugs only)
+static uint8_t prop_model[MAX_PROPS]; // model per prop matrix
+
+// Model matrix for a unit standing at `pos` facing `facing` (sim space),
+// lifted by `lift` metres and pitched forward by `pitch` radians around its
+// own right axis. Built directly so the pitch follows the unit's facing.
+static void unit_matrix(T3DMat4FP *out, vec2 pos, float lift, vec2 facing, float pitch, float scale)
+{
+    // Sim north (+y) is render -z.
+    float fx = facing.x, fz = -facing.y;
+    float c = fm_cosf(pitch), s = fm_sinf(pitch);
+    float k = scale * MODEL_SCALE;
+    T3DMat4 m = {{
+        { fz * k, 0.0f, -fx * k, 0.0f },              // right
+        { fx * s * k, c * k, fz * s * k, 0.0f },      // up
+        { fx * c * k, -s * k, fz * c * k, 0.0f },     // forward
+        { pos.x * WORLD_SCALE, lift * WORLD_SCALE, -pos.y * WORLD_SCALE, 1.0f },
+    }};
+    t3d_mat4_to_fixed(out, &m);
+}
+
+// Move one vertex of a packed pair (`half` 0 or 1) from its bone's space
+// into the model's: what the RSP does with a bone matrix, done once here.
+static void skin_vertex(T3DVertPacked *v, int half, const T3DMat4x3 *m)
+{
+    int16_t *pos = half ? v->posB : v->posA;
+    uint16_t *norm = half ? &v->normB : &v->normA;
+    float x = pos[0], y = pos[1], z = pos[2];
+    for (int i = 0; i < 3; i++) {
+        float o = m->m[0][i] * x + m->m[1][i] * y + m->m[2][i] * z + m->m[3][i];
+        pos[i] = (int16_t)fmaxf(-32768.0f, fminf(32767.0f, roundf(o)));
+    }
+    // The normal is packed 5,6,5 (t3d_vert_pack_normal): unpack, rotate, repack.
+    int nx = (*norm >> 11) & 31, ny = (*norm >> 5) & 63, nz = *norm & 31;
+    float n[3] = { (float)(nx >= 16 ? nx - 32 : nx) / 15.5f, (float)(ny >= 32 ? ny - 64 : ny) / 31.5f,
+                   (float)(nz >= 16 ? nz - 32 : nz) / 15.5f };
+    T3DVec3 r;
+    for (int i = 0; i < 3; i++)
+        r.v[i] = m->m[0][i] * n[0] + m->m[1][i] * n[1] + m->m[2][i] * n[2];
+    *norm = t3d_vert_pack_normal(&r);
+}
+
+// Split a floor model into its chunks' draw blocks and bounds.
+static void bind_ground(ground_t *g, T3DModel *model)
+{
+    T3DModelState state = t3d_model_state_create();
+    T3DModelIter it = t3d_model_iter_create(model, T3D_CHUNK_TYPE_OBJECT);
+    while (t3d_model_iter_next(&it) && g->count < GROUND_CHUNKS) {
+        if (!g->material && it.object->material) {
+            rspq_block_begin();
+            t3d_model_draw_material(it.object->material, &state);
+            g->material = rspq_block_end();
+        }
+        rspq_block_begin();
+        t3d_model_draw_object(it.object, NULL);
+        g->chunk[g->count].block = rspq_block_end();
+        // The floor's matrix turns it half way round (unit_matrix facing
+        // north): sim x is minus model x, sim y is model z.
+        const float k = 1.0f / 64.0f; // model units per metre
+        g->chunk[g->count].min = v2(-it.object->aabbMax[0] * k, it.object->aabbMin[2] * k);
+        g->chunk[g->count].max = v2(-it.object->aabbMin[0] * k, it.object->aabbMax[2] * k);
+        g->count++;
+    }
+    debugf("render: floor in %d chunks\n", g->count);
+}
+
+// Sample `name` once per sim tick and skin the model's vertices to each
+// pose, into buffers the RSP reads directly.
+static pose_clip_t bake_clip(const T3DModel *model, const char *name)
+{
+    T3DSkeleton skel = t3d_skeleton_create(model);
+    T3DAnim anim = t3d_anim_create(model, name);
+    t3d_anim_attach(&anim, &skel);
+    float duration = anim.animRef->duration;
+    int count = (int)(duration / SIM_DT + 0.5f);
+    if (count < 1)
+        count = 1;
+    // The vertex buffer every object's parts load from, up to its last pair.
+    const T3DVertPacked *base = t3d_model_get_vertices(model);
+    int pairs = 0;
+    T3DModelIter it = t3d_model_iter_create(model, T3D_CHUNK_TYPE_OBJECT);
+    while (t3d_model_iter_next(&it)) {
+        for (uint32_t p = 0; p < it.object->numParts; p++) {
+            const T3DObjectPart *part = &it.object->parts[p];
+            int end = (int)(part->vert - base) + (part->vertLoadCount + 1) / 2;
+            if (end > pairs)
+                pairs = end;
+        }
+    }
+    pose_clip_t clip = { malloc_uncached(sizeof(T3DVertPacked) * pairs * count), (uint16_t)count, (uint16_t)pairs };
+    for (int f = 0; f < count; f++) {
+        t3d_anim_set_time(&anim, duration * (float)f / (float)count);
+        t3d_anim_update(&anim, 0.0f);
+        t3d_skeleton_update(&skel);
+        T3DVertPacked *out = &clip.frames[f * pairs];
+        memcpy(out, base, sizeof(T3DVertPacked) * pairs);
+        it = t3d_model_iter_create(model, T3D_CHUNK_TYPE_OBJECT);
+        while (t3d_model_iter_next(&it)) {
+            for (uint32_t p = 0; p < it.object->numParts; p++) {
+                const T3DObjectPart *part = &it.object->parts[p];
+                if (part->matrixIdx == 0xFFFF) // not on a bone: already in model space
+                    continue;
+                const T3DMat4x3 *m = &skel.bones[part->matrixIdx].matrix;
+                T3DVertPacked *v = &out[part->vert - base];
+                for (int k = 0; k < part->vertLoadCount; k++)
+                    skin_vertex(&v[k / 2], k & 1, m);
+            }
+        }
+    }
+    t3d_anim_destroy(&anim);
+    t3d_skeleton_destroy(&skel);
+    return clip;
+}
+
+// Record a baked bug's draw: t3d_model_draw_object without bones, and with
+// fewer vertex loads. The importer cut the mesh into a part per bone, each
+// its own load, and only the last part of a run draws triangles; baked,
+// the bones are gone, so a run whose parts sit in the vertex cache in the
+// same order as in memory loads in one go. Each load costs the RSP a DMA and
+// a lighting pass of its own.
+static void record_bug_object(const T3DObject *obj)
+{
+    uint32_t run = 0; // first part of the current run of loads
+    for (uint32_t p = 0; p < obj->numParts; p++) {
+        const T3DObjectPart *part = &obj->parts[p];
+        bool draws = part->numIndices || part->numStripIndices[0] || part->idxSeqCount;
+        if (!draws && p + 1 < obj->numParts)
+            continue;
+        // Load the run [run, p]: in one go when it is contiguous and fits.
+        const T3DObjectPart *first = &obj->parts[run];
+        bool merge = true;
+        for (uint32_t q = run; q <= p; q++) {
+            const T3DObjectPart *r = &obj->parts[q];
+            int pairs = (int)(((uintptr_t)r->vert - (uintptr_t)first->vert) / sizeof(T3DVertPacked));
+            merge &= r->vertDestOffset - first->vertDestOffset == pairs * 2;
+        }
+        int count = part->vertDestOffset + part->vertLoadCount - first->vertDestOffset;
+        if (merge && count <= 70) {
+            t3d_vert_load(first->vert, first->vertDestOffset, (uint32_t)count);
+        } else {
+            for (uint32_t q = run; q <= p; q++)
+                t3d_vert_load(obj->parts[q].vert, obj->parts[q].vertDestOffset, obj->parts[q].vertLoadCount);
+        }
+        run = p + 1;
+        // Then its triangles, as t3d_model_draw_object draws them.
+        bool synced = false;
+        for (int i = 0; i < part->numIndices; i += 3)
+            t3d_tri_draw(part->indices[i], part->indices[i + 1], part->indices[i + 2]);
+        if (part->idxSeqCount) {
+            t3d_tri_draw_unindexed(part->idxSeqBase, part->idxSeqCount);
+            synced = true;
+        }
+        uint8_t *strip = (uint8_t *)(((uintptr_t)(part->indices + part->numIndices) + 7) & ~(uintptr_t)7);
+        for (int k = 0; k < 4 && part->numStripIndices[k]; k++) {
+            if (k == 3 || part->numStripIndices[k + 1] == 0) {
+                t3d_tri_draw_strip_and_sync((int16_t *)strip, part->numStripIndices[k]);
+                synced = true;
+                break;
+            }
+            synced = false;
+            t3d_tri_draw_strip((int16_t *)strip, part->numStripIndices[k]);
+            strip = (uint8_t *)(((uintptr_t)(strip + part->numStripIndices[k] * 2) + 7) & ~(uintptr_t)7);
+        }
+        if (!synced)
+            t3d_tri_sync();
+    }
+}
+
+// The baked frame bug `i` draws this frame.
+static const T3DVertPacked *bug_frame(const enemy_t *e, int i)
+{
+    const enemy_def_t *def = &enemy_defs[e->type];
+    const pose_clip_t *c;
+    int f;
+    if (e->state == ESTATE_CHASE) {
+        c = &bug_walk[e->type];
+        f = (int)((pose_ticks + (uint32_t)i * WALK_PHASE_STEP) % c->count);
+    } else {
+        c = &bug_attack[e->type];
+        bool windup = e->state == ESTATE_WINDUP;
+        int len = windup ? def->windup : def->recover;
+        float k = len ? (float)(len - e->timer) / (float)len : 1.0f; // timers count down
+        float t = windup ? k * ATTACK_REAR_END : ATTACK_REAR_END + k * (1.0f - ATTACK_REAR_END);
+        f = (int)(t * (float)c->count);
+        if (f >= c->count)
+            f = c->count - 1;
+    }
+    return &c->frames[f * c->pairs];
+}
+
+int render_model_count(void)
+{
+    return MDL_COUNT;
+}
+
+void render_init(void (*progress)(void))
+{
+    tpx_init((TPXInitParams){});
+    for (int i = 0; i < MDL_COUNT; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "rom:/models/%s.t3dm", model_names[i]);
+        models[i] = t3d_model_load(path);
+        if (progress)
+            progress();
+        bool bug = i >= MDL_SKITTER && i <= MDL_BULWARK;
+        int objects = 0;
+        T3DModelIter it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+        while (t3d_model_iter_next(&it))
+            objects++;
+        int ground = -1;
+        for (int b = 0; b < BIOME_COUNT; b++)
+            if (i == biome_ground[b])
+                ground = b;
+        if (bug) {
+            // Bake its clips, then point its vertex loads at the frame segment.
+            bug_walk[i - MDL_SKITTER] = bake_clip(models[i], "walk");
+            bug_attack[i - MDL_SKITTER] = bake_clip(models[i], "attack");
+            it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+            while (t3d_model_iter_next(&it))
+                t3d_model_make_object_vert_placeholder(models[i], it.object, SEG_BUG_FRAME);
+        }
+        if (ground >= 0) {
+            bind_ground(&grounds[ground], models[i]);
+        } else if ((bug || i == MDL_SOLDIER) && objects == 1) {
+            T3DModelState state = t3d_model_state_create();
+            rspq_block_begin();
+            it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+            while (t3d_model_iter_next(&it)) {
+                T3DMaterial *mat = it.object->material;
+                if (!mat)
+                    continue;
+                if (i == MDL_SOLDIER)
+                    mat->colorCombiner = TINT_COMBINER;
+                t3d_model_draw_material(mat, &state);
+            }
+            if (i == MDL_SOLDIER) {
+                rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
+                soldier_material = rspq_block_end();
+            } else {
+                bug_material[i - MDL_SKITTER] = rspq_block_end();
+            }
+            // The soldiers' buffered skeletons draw through the skeleton
+            // segment, so one recorded block serves all four; a bug's block
+            // has no bones at all.
+            rspq_block_begin();
+            it = t3d_model_iter_create(models[i], T3D_CHUNK_TYPE_OBJECT);
+            while (t3d_model_iter_next(&it)) {
+                if (bug)
+                    record_bug_object(it.object);
+                else
+                    t3d_model_draw_object(it.object, (const T3DMat4FP *)t3d_segment_placeholder(T3D_SEGMENT_SKELETON));
+            }
+            blocks[i] = rspq_block_end();
+        } else if (i == MDL_SOLDIER) {
+            T3DSkeleton tmp = t3d_skeleton_create_buffered(models[i], FB_COUNT);
+            rspq_block_begin();
+            t3d_model_draw_skinned(models[i], &tmp);
+            blocks[i] = rspq_block_end();
+            t3d_skeleton_destroy(&tmp);
+        } else {
+            rspq_block_begin();
+            t3d_model_draw(models[i]);
+            blocks[i] = rspq_block_end();
+        }
+    }
+
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        soldier_pose[i].skel = t3d_skeleton_create_buffered(models[MDL_SOLDIER], FB_COUNT);
+        soldier_pose[i].run = t3d_anim_create(models[MDL_SOLDIER], "run");
+        soldier_pose[i].idle = t3d_anim_create(models[MDL_SOLDIER], "idle");
+        t3d_anim_attach(&soldier_pose[i].run, &soldier_pose[i].skel);
+        t3d_anim_attach(&soldier_pose[i].idle, &soldier_pose[i].skel);
+    }
+
+    // Everything the frame loop touches is allocated here, once.
+    static_mats = malloc_uncached(sizeof(T3DMat4FP) * (1 + SIM_MAX_OBSTACLES));
+    dynamic_mats = malloc_uncached(sizeof(T3DMat4FP) * MAX_DYNAMIC * FB_COUNT);
+    particles = malloc_uncached(sizeof(TPXParticleS16) * PARTICLE_PAIRS * FB_COUNT);
+    particle_mat = malloc_uncached(sizeof(T3DMat4FP));
+    t3d_mat4fp_identity(particle_mat);
+    viewport = t3d_viewport_create_buffered(FB_COUNT);
+    debugf("render: %u dynamic matrices, %u particles per frame\n",
+           (unsigned)MAX_DYNAMIC, (unsigned)MAX_PARTICLES);
+}
+
+void render_bind_world(const sim_t *sim)
+{
+    unit_matrix(&static_mats[0], v2(0.0f, 0.0f), 0.0f, v2(0.0f, 1.0f), 0.0f, 1.0f);
+    for (int i = 0; i < sim->arena.obstacle_count; i++) {
+        const obstacle_t *o = &sim->arena.obstacles[i];
+        vec2 f = v2(fm_sinf(o->yaw), fm_cosf(o->yaw));
+        unit_matrix(&static_mats[1 + i], o->pos, 0.0f, f, 0.0f, 1.0f);
+    }
+}
+
+static bool in_rect(vec2 p, vec2 mn, vec2 mx)
+{
+    return p.x >= mn.x && p.x <= mx.x && p.y >= mn.y && p.y <= mx.y;
+}
+
+// --- Particles ---------------------------------------------------------------
+
+typedef struct {
+    TPXParticleS16 *buf;
+    int count;
+} pbuild_t;
+
+static void pb_add(pbuild_t *pb, float x, float y, float z, int size, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (pb->count >= PARTICLE_PAIRS * 2 || size <= 0)
+        return;
+    int16_t *pos = tpx_buffer_s16_get_pos(pb->buf, pb->count);
+    pos[0] = (int16_t)(x * WORLD_SCALE);
+    pos[1] = (int16_t)(y * WORLD_SCALE);
+    pos[2] = (int16_t)(z * WORLD_SCALE);
+    *tpx_buffer_s16_get_size(pb->buf, pb->count) = (int8_t)(size > 127 ? 127 : size);
+    uint8_t *col = tpx_buffer_s16_get_rgba(pb->buf, pb->count);
+    col[0] = r; col[1] = g; col[2] = b; col[3] = 0xFF;
+    pb->count++;
+}
+
+// tpx draws pairs: pad an odd count with an invisible particle.
+static void pb_pad(pbuild_t *pb)
+{
+    if ((pb->count & 1) && pb->count < PARTICLE_PAIRS * 2) {
+        *tpx_buffer_s16_get_size(pb->buf, pb->count) = 0;
+        pb->count++;
+    }
+}
+
+static void pb_ring(pbuild_t *pb, vec2 c, float radius, uint8_t r, uint8_t g, uint8_t b)
+{
+    for (int k = 0; k < TELEGRAPH_DOTS; k++) {
+        float a = 6.2832f * (float)k / TELEGRAPH_DOTS;
+        pb_add(pb, c.x + fm_cosf(a) * radius, 0.1f, -(c.y + fm_sinf(a) * radius), 14, r, g, b);
+    }
+}
+
+// Calldown markers: a blinking light column over each beacon (faster near
+// arrival) and where the strikes will land.
+static void build_calldowns(const sim_t *sim, pbuild_t *pb)
+{
+    for (int i = 0; i < SIM_MAX_BEACONS; i++) {
+        const beacon_t *b = &sim->beacons[i];
+        if (!b->active)
+            continue;
+        const uint8_t *c = beacon_rgb[b->type];
+        int period = b->timer > SECONDS(2.0f) ? 8 : 3;
+        bool on = b->state == BEACON_FLYING || ((b->timer / period) & 1) == 0;
+        if (on && b->state == BEACON_ARMED)
+            for (int k = 0; k < 4; k++)
+                pb_add(pb, b->pos.x, 0.6f + 0.8f * k, -b->pos.y, 28 - 4 * k, c[0], c[1], c[2]);
+        if (b->state != BEACON_ARMED)
+            continue;
+        if (b->type == CALLDOWN_BARRAGE) {
+            pb_ring(pb, b->pos, BARRAGE_AREA, c[0], c[1], c[2]);
+        } else if (b->type == CALLDOWN_AIRSTRIKE || b->type == CALLDOWN_NAPALM) {
+            bool napalm = b->type == CALLDOWN_NAPALM;
+            int n = napalm ? NAPALM_PATCHES : AIRSTRIKE_BOMBS;
+            float spacing = napalm ? NAPALM_SPACING : AIRSTRIKE_SPACING;
+            for (int k = 0; k < n; k++) {
+                float along = ((float)k - (n - 1) * 0.5f) * spacing;
+                vec2 at = v2_add(b->pos, v2_scale(b->dir, along));
+                pb_add(pb, at.x, 0.1f, -at.y, 24, c[0], c[1], c[2]);
+            }
+        } else if (b->type == CALLDOWN_MINEFIELD) {
+            pb_ring(pb, b->pos, MINE_SPREAD, c[0], c[1], c[2]);
+        }
+    }
+    for (int i = 0; i < SIM_MAX_STRIKES; i++) {
+        const strike_t *k = &sim->strikes[i];
+        if (k->active && k->type == CALLDOWN_BARRAGE)
+            pb_ring(pb, k->center, BARRAGE_AREA, 255, 70, 40);
+    }
+    for (int i = 0; i < SIM_MAX_PICKUPS; i++) {
+        const pickup_t *k = &sim->pickups[i];
+        if (k->active && ((sim->tick / 8) & 1))
+            pb_add(pb, k->pos.x, 1.4f, -k->pos.y, 24, 255, 220, 120);
+    }
+    // Mines: a dark disc with a red light that blinks once armed.
+    for (int i = 0; i < SIM_MAX_MINES; i++) {
+        const mine_t *m = &sim->mines[i];
+        if (!m->active)
+            continue;
+        pb_add(pb, m->pos.x, 0.08f, -m->pos.y, 14, 40, 40, 44);
+        bool armed = MINE_LIFE - m->life >= MINE_ARM_TICKS;
+        if (!armed || ((sim->tick + (uint32_t)i * 5) / 10) & 1)
+            pb_add(pb, m->pos.x, 0.2f, -m->pos.y, 8, 255, armed ? 40 : 200, 40);
+    }
+}
+
+// Burning napalm: flames flicker over each patch (semi-transparent pass).
+static void build_fires(const sim_t *sim, pbuild_t *pb)
+{
+    static const uint8_t FLAME[3][3] = { { 255, 150, 40 }, { 255, 90, 20 }, { 255, 210, 90 } };
+    for (int i = 0; i < SIM_MAX_FIRES; i++) {
+        const fire_t *f = &sim->fires[i];
+        if (!f->active)
+            continue;
+        float fade = f->life < SECONDS(1.0f) ? (float)f->life / SECONDS(1.0f) : 1.0f;
+        for (int k = 0; k < FIRE_FLAMES; k++) {
+            float a = 6.2832f * (float)k / FIRE_FLAMES + (float)(frame_count % 64) * 0.1f;
+            float r = (k % 2 ? 0.5f : 1.2f) * FIRE_RADIUS * 0.6f;
+            int size = (int)((float)(26 + (int)((frame_count + (uint32_t)k * 7) % 12)) * fade);
+            const uint8_t *c = FLAME[(k + frame_count / 3) % 3];
+            pb_add(pb, f->pos.x + fm_cosf(a) * r, 0.5f + 0.3f * (float)(k % 3), -(f->pos.y + fm_sinf(a) * r), size,
+                   c[0], c[1], c[2]);
+        }
+    }
+}
+
+// Site colours, matching the HUD's text styles for the zone names.
+static const uint8_t zone_rgb[3][3] = {
+    { 232, 150, 40 },  // zone A (STYLE_TITLE)
+    { 80, 220, 255 },  // zone B (STYLE_ZONE_B)
+    { 200, 120, 255 }, // zone C (STYLE_ZONE_C)
+};
+static const uint8_t lz_rgb[3] = { 240, 240, 255 };
+static const uint8_t nest_rgb[3] = { 150, 230, 60 };
+static const uint8_t terminal_rgb[3] = { 80, 220, 255 };
+
+// A light column over a site, and when the site is off screen a chevron at
+// the edge of the visible ground pointing at it. Particles, not text: every
+// rdpq_text call costs the RSP far more than a few particles.
+static void site_marker(const sim_t *sim, pbuild_t *pb, vec2 pos, const uint8_t *c)
+{
+    for (int k = 0; k < 5; k++)
+        pb_add(pb, pos.x, 0.8f + 0.8f * k, -pos.y, 30 - 4 * k, c[0], c[1], c[2]);
+
+    // The visible ground is a trapezoid: use its narrow bottom width, and
+    // keep clear of the HUD rows at the top and bottom of the screen.
+    const camera_t *cam = &sim->camera;
+    cam_extent_t e = camera_extent();
+    vec2 mn = v2(cam->target.x - cam->dist * e.half_w + 1.5f, cam->target.y - cam->dist * e.below + 3.0f);
+    vec2 mx = v2(cam->target.x + cam->dist * e.half_w - 1.5f, cam->target.y + cam->dist * e.above - 4.0f);
+    if (in_rect(pos, mn, mx))
+        return;
+    vec2 at = v2(clampf(pos.x, mn.x, mx.x), clampf(pos.y, mn.y, mx.y));
+    vec2 dir = v2_norm_or(v2_sub(pos, at), v2(0.0f, 1.0f)), side = v2(-dir.y, dir.x);
+    vec2 pts[4] = {
+        v2_add(at, v2_scale(dir, 0.7f)),
+        v2_add(at, v2_scale(side, 0.6f)),
+        v2_sub(at, v2_scale(side, 0.6f)),
+        v2_sub(at, v2_scale(dir, 0.4f)),
+    };
+    for (int k = 0; k < 4; k++)
+        pb_add(pb, pts[k].x, 0.5f, -pts[k].y, k == 3 ? 16 : 26, c[0], c[1], c[2]);
+}
+
+// A ring of dots around `c`, the first `lit` of TELEGRAPH_DOTS in `on`.
+static void progress_ring(pbuild_t *pb, vec2 c, float radius, int lit, const uint8_t *on, const uint8_t *off)
+{
+    for (int k = 0; k < TELEGRAPH_DOTS; k++) {
+        float a = 6.2832f * (float)k / TELEGRAPH_DOTS;
+        const uint8_t *col = k < lit ? on : off;
+        pb_add(pb, c.x + fm_cosf(a) * radius, 0.1f, -(c.y + fm_sinf(a) * radius), 16, col[0], col[1], col[2]);
+    }
+}
+
+// The objective's sites: zones as rings that light up with their progress
+// (green when captured, red while bugs hold them); nests, which need no
+// ring; the terminal's ring, filling as the stage uploads (blinking while
+// it waits for its code, red while nobody is in it). Then the LZ, blinking
+// while it waits for the extraction call. Sites still to visit get markers.
+static void build_mission(const sim_t *sim, pbuild_t *pb)
+{
+    static const uint8_t GREY[3] = { 150, 150, 150 }, GOLD[3] = { 255, 190, 60 }, GREEN[3] = { 90, 240, 110 };
+    const mission_t *m = &sim->mission;
+    bool blink = (sim->tick / 8) & 1;
+    bool active = m->phase == MISSION_OBJECTIVE;
+    if (m->phase <= MISSION_OBJECTIVE) {
+        for (int z = 0; z < sim->arena.site_count; z++) {
+            vec2 c = sim->arena.sites[z];
+            if (m->objective == OBJ_NESTS) {
+                if (active && !m->nests[z].destroyed)
+                    site_marker(sim, pb, c, nest_rgb);
+            } else if (m->objective == OBJ_UPLOAD) {
+                const upload_t *u = &m->upload;
+                int lit = u->progress * TELEGRAPH_DOTS / mission_stage_ticks(sim);
+                static const uint8_t RED[3] = { 255, 60, 50 };
+                const uint8_t *off = !u->running ? (blink ? terminal_rgb : GREY) : !u->players_in && blink ? RED : GREY;
+                progress_ring(pb, c, UPLOAD_RADIUS, lit, GOLD, off);
+                if (active)
+                    site_marker(sim, pb, c, terminal_rgb);
+            } else {
+                const zone_state_t *zs = &m->zones[z];
+                static const uint8_t RED[3] = { 255, 60, 50 }, DARK_RED[3] = { 150, 60, 50 };
+                int lit = zs->held * TELEGRAPH_DOTS / mission_capture_ticks(sim);
+                if (zs->captured)
+                    progress_ring(pb, c, ZONE_RADIUS, TELEGRAPH_DOTS, GREEN, GREEN);
+                else if (zs->players_in && zs->bugs_in)
+                    progress_ring(pb, c, ZONE_RADIUS, 0, GREY, blink ? RED : DARK_RED);
+                else
+                    progress_ring(pb, c, ZONE_RADIUS, lit, GOLD, GREY);
+                if (active && !zs->captured)
+                    site_marker(sim, pb, c, zone_rgb[z % 3]);
+            }
+        }
+    }
+    const uint8_t *lz = lz_rgb;
+    if (m->phase >= MISSION_EXTRACT && !(m->phase == MISSION_EXTRACT && blink))
+        pb_ring(pb, sim->arena.lz, LZ_RADIUS, lz[0], lz[1], lz[2]);
+    if (m->phase >= MISSION_EXTRACT && !mission_over(sim))
+        site_marker(sim, pb, sim->arena.lz, lz);
+}
+
+// A blob shadow (a flat dark disc) of `radius` metres at `pos`.
+static int add_shadow(T3DMat4FP *dyn, int n, int first, vec2 pos, float radius)
+{
+    prop_model[n - first] = MDL_SHADOW;
+    unit_matrix(&dyn[n], pos, 0.04f, v2(0.0f, 1.0f), 0.0f, radius);
+    return n + 1;
+}
+
+// The dropship's height above the LZ, or -1 when it isn't there: coming down
+// at the end of the hold, on the ground while the squad boards, then lifting
+// off (accelerating) a moment after the mission succeeds.
+static float dropship_lift(const sim_t *sim)
+{
+    const mission_t *m = &sim->mission;
+    if (m->phase == MISSION_HOLD && m->timer <= DROPSHIP_DESCENT) {
+        float k = (float)m->timer / DROPSHIP_DESCENT;
+        return 30.0f * k * k;
+    }
+    if (m->phase == MISSION_BOARDING)
+        return 0.0f;
+    if (m->phase == MISSION_SUCCESS) {
+        float f = success_frames > 20 ? (float)(success_frames - 20) : 0.0f;
+        return 0.012f * f * f;
+    }
+    return -1.0f;
+}
+
+// Smoke trailing the pods coming down at the start, and the drops falling
+// onto beacons.
+static void build_trails(const sim_t *sim, pbuild_t *pb)
+{
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!p->active || p->state != PSTATE_DROPPING)
+            continue;
+        float k = (float)p->state_timer / DROP_IN_TICKS;
+        float h = 40.0f * k * k;
+        for (int s = 0; s < 3 && h > 1.0f; s++) {
+            uint8_t v = (uint8_t)(170 - 30 * s);
+            pb_add(pb, p->pos.x, h + 1.6f + 1.6f * (float)s, -p->pos.y, 22 + 8 * s, v, v, v);
+        }
+    }
+    for (int i = 0; i < SIM_MAX_BEACONS; i++) {
+        const beacon_t *b = &sim->beacons[i];
+        if (!b->active || b->state != BEACON_ARMED || drop_model[b->type] < 0 || b->timer > DROP_TICKS)
+            continue;
+        float k = (float)b->timer / DROP_TICKS;
+        float h = 25.0f * k * k;
+        for (int s = 0; s < 2 && h > 1.0f; s++)
+            pb_add(pb, b->pos.x, h + 1.5f + 1.5f * (float)s, -b->pos.y, 20 + 8 * s, 160, 160, 160);
+    }
+}
+
+// The dropship's engines glow while it comes down and lifts off.
+static void build_engines(const sim_t *sim, pbuild_t *pb)
+{
+    float lift = dropship_lift(sim);
+    if (lift < 0.3f || lift >= 45.0f)
+        return;
+    vec2 lz = sim->arena.lz;
+    for (int k = 0; k < ENGINE_GLOWS; k++) {
+        float side = (k & 1) ? 1.4f : -1.4f;
+        float fore = (k & 2) ? 1.2f : -1.8f;
+        int flicker = (int)((frame_count + (uint32_t)k * 3) % 4);
+        pb_add(pb, lz.x + side, lift - 0.2f, -(lz.y + fore), 22 + 4 * flicker, 255, 170 + 15 * flicker, 70);
+    }
+}
+
+// Opaque particles from index 0, then (from *glow_start, an even index) the
+// semi-transparent ones. Returns the opaque count.
+static int build_particles(const sim_t *sim, TPXParticleS16 *buf, vec2 vmin, vec2 vmax,
+                           int *glow_start, int *glow_count)
+{
+    pbuild_t pb = { .buf = buf, .count = 0 };
+
+    for (int i = 0; i < SIM_MAX_PROJECTILES; i++) {
+        const projectile_t *p = &sim->projectiles[i];
+        if (!p->active || !in_rect(p->pos, vmin, vmax))
+            continue;
+        bool shotgun = p->weapon == WEAPON_SHOTGUN;
+        vec2 tail = v2_sub(p->pos, v2_scale(p->vel, SIM_DT * 0.5f));
+        if (p->weapon == WEAPON_LAUNCHER) { // a grenade: a dark round with a glowing fuse
+            pb_add(&pb, p->pos.x, 1.0f, -p->pos.y, 18, 60, 64, 56);
+            pb_add(&pb, tail.x, 1.0f, -tail.y, 10, 255, 160, 60);
+            continue;
+        }
+        pb_add(&pb, p->pos.x, 1.0f, -p->pos.y, shotgun ? 16 : 20, 255, 240, 150);
+        pb_add(&pb, tail.x, 1.0f, -tail.y, shotgun ? 10 : 14, 255, 170, 60);
+    }
+
+    // Aim marker: three dots ahead of each living player, in their colour
+    // (grey while reloading).
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!sim_player_alive(p) || p->state != PSTATE_NORMAL)
+            continue;
+        const uint8_t *c = PLAYER_RGB[i];
+        static const uint8_t grey[3] = { 120, 120, 120 };
+        if (p->reload_timer)
+            c = grey;
+        for (int d = 0; d < 3; d++) {
+            vec2 at = v2_add(p->pos, v2_scale(p->facing, 1.6f + 0.8f * d));
+            pb_add(&pb, at.x, 0.15f, -at.y, 12, c[0], c[1], c[2]);
+        }
+    }
+
+    build_calldowns(sim, &pb);
+    build_mission(sim, &pb);
+    build_trails(sim, &pb);
+
+    const fx_particle_t *fx = fx_particles();
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1) {
+            pb_pad(&pb);
+            *glow_start = pb.count;
+            build_engines(sim, &pb);
+            build_fires(sim, &pb);
+        }
+        for (int i = 0; i < FX_MAX; i++) {
+            const fx_particle_t *f = &fx[i];
+            if (!f->life || f->glow != (pass == 1))
+                continue;
+            int size = f->size * f->life / f->life_max + 4;
+            pb_add(&pb, f->x, f->y, f->z, size, f->rgb[0], f->rgb[1], f->rgb[2]);
+        }
+    }
+    pb_pad(&pb);
+    *glow_count = pb.count - *glow_start;
+    return *glow_start;
+}
+
+// --- Props ---------------------------------------------------------------------
+
+// Beacons (arcing while thrown), what falls on them in the last moments of
+// the call-in, turrets and pickups. Appends matrices after `n`; returns the
+// new count.
+static int build_props(const sim_t *sim, T3DMat4FP *dyn, int n, vec2 vmin, vec2 vmax)
+{
+    int first = n;
+    for (int i = 0; i < SIM_MAX_BEACONS; i++) {
+        const beacon_t *b = &sim->beacons[i];
+        if (!b->active || !in_rect(b->pos, vmin, vmax))
+            continue;
+        float lift = 0.0f;
+        if (b->state == BEACON_FLYING) {
+            float f = 1.0f - (float)b->timer / BEACON_FLIGHT_TICKS;
+            lift = 0.9f * (1.0f - f) + 6.0f * f * (1.0f - f);
+        }
+        prop_model[n - first] = MDL_BEACON;
+        unit_matrix(&dyn[n++], b->pos, lift, b->dir, 0.0f, 1.0f);
+        if (b->state == BEACON_ARMED && drop_model[b->type] >= 0 && b->timer <= DROP_TICKS) {
+            float k = (float)b->timer / DROP_TICKS;
+            prop_model[n - first] = (uint8_t)drop_model[b->type];
+            unit_matrix(&dyn[n++], b->pos, 25.0f * k * k, b->dir, 0.0f, 1.0f);
+            n = add_shadow(dyn, n, first, b->pos, 0.7f * (1.0f - 0.6f * k));
+        }
+    }
+    for (int i = 0; i < SIM_MAX_TURRETS; i++) {
+        const turret_t *t = &sim->turrets[i];
+        if (!t->active || !in_rect(t->pos, vmin, vmax))
+            continue;
+        prop_model[n - first] = MDL_TURRET;
+        unit_matrix(&dyn[n++], t->pos, 0.0f, t->facing, 0.0f, 1.0f);
+    }
+    for (int i = 0; i < SIM_MAX_PICKUPS; i++) {
+        const pickup_t *k = &sim->pickups[i];
+        if (!k->active || !in_rect(k->pos, vmin, vmax))
+            continue;
+        prop_model[n - first] = k->type == PICKUP_RESUPPLY ? MDL_CRATE : MDL_MGCASE; // the launcher's case too
+        unit_matrix(&dyn[n++], k->pos, 0.0f, v2(0.0f, 1.0f), 0.0f, 1.0f);
+    }
+    // The squad's pods coming down at the start of the mission, and every
+    // trooper's shadow (their models pitch flat when diving, so it is a
+    // separate disc).
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!sim_player_alive(p))
+            continue;
+        if (p->state != PSTATE_DROPPING) {
+            n = add_shadow(dyn, n, first, p->pos, 0.45f);
+            continue;
+        }
+        float k = (float)p->state_timer / DROP_IN_TICKS;
+        prop_model[n - first] = MDL_POD;
+        unit_matrix(&dyn[n++], p->pos, 40.0f * k * k, v2(0.0f, 1.0f), 0.0f, 1.0f);
+        n = add_shadow(dyn, n, first, p->pos, 0.8f * (1.0f - 0.6f * k));
+    }
+    // The objective's structures: nests (craters once destroyed; a live
+    // nest swells and shrinks while it is sending bugs out) or the terminal.
+    const mission_t *m = &sim->mission;
+    for (int i = 0; i < sim->arena.site_count && m->objective != OBJ_ZONES; i++) {
+        vec2 c = sim->arena.sites[i];
+        if (!in_rect(c, vmin, vmax) || (m->objective == OBJ_UPLOAD && i > 0))
+            continue;
+        float scale = 1.0f;
+        if (m->objective == OBJ_UPLOAD) {
+            prop_model[n - first] = MDL_TERMINAL;
+        } else if (m->nests[i].destroyed) {
+            prop_model[n - first] = MDL_NEST_DEAD;
+        } else {
+            prop_model[n - first] = MDL_NEST;
+            if (m->nests[i].awake)
+                scale += 0.04f * fm_sinf((float)frame_count * 0.25f + (float)i);
+        }
+        unit_matrix(&dyn[n++], c, 0.0f, v2(fm_sinf((float)i * 2.3f), fm_cosf((float)i * 2.3f)), 0.0f, scale);
+    }
+    // The dropship: descending at the end of the hold, down on the LZ, then
+    // lifting off once everyone is aboard.
+    float lift = dropship_lift(sim);
+    if (lift >= 0.0f && lift < 45.0f) {
+        prop_model[n - first] = MDL_DROPSHIP;
+        unit_matrix(&dyn[n++], sim->arena.lz, lift, v2(0.0f, 1.0f), 0.0f, 1.0f);
+        n = add_shadow(dyn, n, first, sim->arena.lz, 3.4f * (1.0f - fminf(0.7f, lift / 40.0f)));
+    }
+    return n;
+}
+
+// --- Frame ---------------------------------------------------------------------
+
+// Animate each soldier (the bugs' clips are baked).
+static void update_poses(const sim_t *sim, float dt)
+{
+    int updated = 0;
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!sim_player_alive(p))
+            continue;
+        if (p->state != PSTATE_NORMAL) // diving / prone: hold the pose
+            continue;
+        bool moving = v2_len2(p->vel) > 0.25f;
+        if (moving != soldier_pose[i].running) {
+            soldier_pose[i].running = moving;
+            t3d_skeleton_reset(&soldier_pose[i].skel); // idle leaves the legs alone
+        }
+        t3d_anim_update(moving ? &soldier_pose[i].run : &soldier_pose[i].idle, dt);
+        t3d_skeleton_update(&soldier_pose[i].skel);
+        updated++;
+    }
+    stats.skeletons = (uint16_t)updated;
+}
+
+uint32_t render_scene(const sim_t *sim, float anim_dt)
+{
+    uint64_t t0 = get_ticks();
+    frame_idx = (frame_idx + 1) % FB_COUNT;
+    T3DMat4FP *dyn = &dynamic_mats[frame_idx * MAX_DYNAMIC];
+    TPXParticleS16 *pbuf = &particles[frame_idx * PARTICLE_PAIRS];
+
+    frame_count++;
+    success_frames = sim->mission.phase == MISSION_SUCCESS ? success_frames + 1 : 0;
+
+    // Camera from the sim: looking north, pitched down, `dist` from target,
+    // plus any explosion shake (visual only, the sim never sees it). While
+    // the squad drops in it starts high and swoops down with the pods.
+    camera_t view = sim->camera;
+    if (sim->mission.phase == MISSION_DROP) {
+        float k = (float)sim->mission.timer / DROP_IN_TICKS;
+        view.dist += 28.0f * k * k;
+    }
+    const camera_t *cam = &view;
+    float h = fm_sinf(CAM_PITCH_RAD) * cam->dist, back = fm_cosf(CAM_PITCH_RAD) * cam->dist;
+    vec2 look = v2_add(cam->target, fx_shake());
+    T3DVec3 target = {{ look.x * WORLD_SCALE, 0.0f, -look.y * WORLD_SCALE }};
+    T3DVec3 eye = {{ target.v[0], h * WORLD_SCALE, target.v[2] + back * WORLD_SCALE }};
+    t3d_viewport_set_projection(&viewport, CAM_FOV_Y_RAD, 2.0f * WORLD_SCALE, 100.0f * WORLD_SCALE);
+    t3d_viewport_look_at(&viewport, &eye, &target, &(T3DVec3){{ 0.0f, 1.0f, 0.0f }});
+
+    vec2 vmin, vmax;
+    camera_view_rect(cam, CULL_PAD, &vmin, &vmax);
+    uint32_t skip = bench_skip();
+
+    // Unit matrices (CPU) before waiting for a framebuffer.
+    int ndyn = 0;
+    int player_idx[SIM_MAX_PLAYERS];
+    for (int i = 0; i < SIM_MAX_PLAYERS; i++) {
+        const player_t *p = &sim->players[i];
+        if (!sim_player_alive(p) || p->state == PSTATE_DROPPING) // pods are props
+            continue;
+        float pitch = 0.0f, lift = 0.0f;
+        if (p->state == PSTATE_DIVING) {
+            pitch = 1.2f;
+            lift = 0.25f;
+        } else if (p->state == PSTATE_PRONE) {
+            pitch = 1.45f;
+            lift = 0.1f;
+        }
+        player_idx[ndyn] = i;
+        unit_matrix(&dyn[ndyn++], p->pos, lift, p->facing, pitch, 1.0f);
+    }
+    int first_bug = ndyn;
+    pose_ticks += (uint32_t)(anim_dt / SIM_DT + 0.5f);
+    for (int n = 0; n < sim->active_count; n++) {
+        int i = sim->active[n];
+        const enemy_t *e = &sim->enemies[i];
+        if (!e->active || !in_rect(e->pos, vmin, vmax))
+            continue;
+        dyn_type[ndyn] = e->type;
+        dyn_frame[ndyn] = bug_frame(e, i);
+        unit_matrix(&dyn[ndyn++], e->pos, 0.0f, e->facing, 0.0f, 1.0f);
+    }
+    stats.drawn_bugs = (uint16_t)(ndyn - first_bug);
+    int first_prop = ndyn;
+    ndyn = build_props(sim, dyn, ndyn, vmin, vmax);
+    int glow_start = 0, nglow = 0;
+    int npart = build_particles(sim, pbuf, vmin, vmax, &glow_start, &nglow);
+    uint64_t t1 = get_ticks();
+    update_poses(sim, anim_dt);
+    uint64_t t2 = get_ticks();
+    stats.build_us = (uint32_t)TICKS_TO_US(t1 - t0);
+    stats.anim_us = (uint32_t)TICKS_TO_US(t2 - t1);
+
+    uint64_t wait_start = get_ticks();
+    surface_t *fb = display_get();
+    uint32_t wait_us = (uint32_t)TICKS_TO_US(get_ticks() - wait_start);
+
+    rdpq_attach(fb, display_get_zbuf());
+    gpu_timing_submit_begin();
+    t3d_frame_start();
+    t3d_viewport_attach(&viewport);
+    const uint8_t *clear = biome_light[sim->settings.biome % BIOME_COUNT][0];
+    t3d_screen_clear_color(RGBA32(clear[0], clear[1], clear[2], 0xFF));
+    t3d_screen_clear_depth();
+
+    const uint8_t (*light)[3] = biome_light[sim->settings.biome % BIOME_COUNT];
+    uint8_t ambient[4] = { light[1][0], light[1][1], light[1][2], 0xFF };
+    uint8_t sun[4] = { light[2][0], light[2][1], light[2][2], 0xFF };
+    T3DVec3 sun_dir = {{ -0.5f, 1.0f, 0.4f }};
+    t3d_vec3_norm(&sun_dir);
+    t3d_light_set_ambient(ambient);
+    t3d_light_set_directional(0, sun, &sun_dir);
+    t3d_light_set_count(1);
+
+    t3d_matrix_push_pos(1);
+    t3d_matrix_set(&static_mats[0], true);
+    int biome = sim->settings.biome % BIOME_COUNT;
+    const ground_t *ground = &grounds[biome];
+    if (ground->material && !(skip & BENCH_SKIP_WORLD))
+        rspq_block_run(ground->material);
+    for (int i = 0; i < ground->count && !(skip & BENCH_SKIP_WORLD); i++) {
+        const vec2 mn = ground->chunk[i].min, mx = ground->chunk[i].max;
+        if (mx.x >= vmin.x && mn.x <= vmax.x && mx.y >= vmin.y && mn.y <= vmax.y)
+            rspq_block_run(ground->chunk[i].block);
+    }
+    for (int i = 0; i < sim->arena.obstacle_count; i++) {
+        const obstacle_t *o = &sim->arena.obstacles[i];
+        if (!in_rect(o->pos, vmin, vmax) || (skip & BENCH_SKIP_WORLD))
+            continue;
+        t3d_matrix_set(&static_mats[1 + i], true);
+        rspq_block_run(blocks[biome_rocks[biome] + o->kind]);
+    }
+    if (first_bug && soldier_material)
+        rspq_block_run(soldier_material);
+    for (int i = 0; i < first_bug; i++) {
+        const uint8_t *c = PLAYER_RGB[player_idx[i]];
+        rdpq_set_prim_color(RGBA32(c[0], c[1], c[2], 0xFF));
+        t3d_skeleton_use(&soldier_pose[player_idx[i]].skel);
+        t3d_matrix_set(&dyn[i], true);
+        rspq_block_run(blocks[MDL_SOLDIER]);
+    }
+    for (int t = 0; t < ENEMY_TYPE_COUNT && !(skip & BENCH_SKIP_BUGS); t++) {
+        bool material_set = false;
+        for (int i = first_bug; i < ndyn; i++) {
+            if (dyn_type[i] != t)
+                continue;
+            if (!material_set && bug_material[t])
+                rspq_block_run(bug_material[t]);
+            material_set = true;
+            t3d_segment_set(SEG_BUG_FRAME, (void *)dyn_frame[i]);
+            t3d_matrix_set(&dyn[i], true);
+            rspq_block_run(blocks[MDL_SKITTER + t]);
+        }
+    }
+    for (int i = first_prop; i < ndyn; i++) {
+        t3d_matrix_set(&dyn[i], true);
+        rspq_block_run(blocks[prop_model[i - first_prop]]);
+    }
+    t3d_matrix_pop(1);
+
+    if (skip & BENCH_SKIP_PARTICLES)
+        npart = nglow = 0;
+    if (npart) {
+        // tpx emits screen-space rectangles colored by prim; this is the
+        // setup from Tiny3D's 18_particles example.
+        rdpq_set_mode_standard();
+        rdpq_mode_zbuf(true, true);
+        rdpq_mode_zoverride(true, 0, 0);
+        rdpq_mode_combiner(RDPQ_COMBINER1((PRIM, 0, ENV, 0), (0, 0, 0, 1)));
+        rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
+        tpx_state_from_t3d();
+        tpx_matrix_push(particle_mat);
+        tpx_state_set_base_size(64);
+        tpx_state_set_scale(1.0f, 1.0f);
+        tpx_particle_draw_s16(pbuf, (uint32_t)npart);
+        tpx_matrix_pop(1);
+    }
+    if (nglow) {
+        // Explosion cores: semi-transparent with a constant alpha. (The RDP's
+        // additive blend wraps to black on overflow, see rdpq_mode.h.) They
+        // test depth but don't write it, so they never hide each other.
+        rdpq_set_mode_standard();
+        rdpq_mode_zbuf(true, false);
+        rdpq_mode_zoverride(true, 0, 0);
+        rdpq_mode_combiner(RDPQ_COMBINER1((PRIM, 0, ENV, 0), (0, 0, 0, 1)));
+        rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY_CONST);
+        rdpq_set_fog_color(RGBA32(0, 0, 0, 150));
+        rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
+        tpx_state_from_t3d();
+        tpx_matrix_push(particle_mat);
+        tpx_state_set_base_size(64);
+        tpx_state_set_scale(1.0f, 1.0f);
+        tpx_particle_draw_s16(&pbuf[glow_start / 2], (uint32_t)nglow);
+        tpx_matrix_pop(1);
+    }
+    float flash = fx_flash();
+    if (flash > 0.02f) {
+        // Explosion flash: one blended full-screen rectangle, a frame or two.
+        rdpq_set_mode_standard();
+        rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+        rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+        rdpq_set_prim_color(RGBA32(255, 230, 190, (uint8_t)(flash * 160.0f)));
+        rdpq_fill_rectangle(0, 0, 320, 240);
+    }
+    return wait_us;
+}
+
+const render_stats_t *render_stats(void)
+{
+    return &stats;
+}
+
+bool render_project(vec2 pos, float height, int *x, int *y)
+{
+    T3DVec3 world = {{ pos.x * WORLD_SCALE, height * WORLD_SCALE, -pos.y * WORLD_SCALE }}, screen;
+    t3d_viewport_calc_viewspace_pos(&viewport, &screen, &world);
+    if (screen.v[2] >= 1.0f || screen.v[0] < 0.0f || screen.v[0] >= 320.0f ||
+        screen.v[1] < 0.0f || screen.v[1] >= 240.0f)
+        return false;
+    *x = (int)screen.v[0];
+    *y = (int)screen.v[1];
+    return true;
+}
+
+void render_end(void)
+{
+    gpu_timing_detach_show();
+}
